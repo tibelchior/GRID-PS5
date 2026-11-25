@@ -1,0 +1,41 @@
+--- a/src/dxvk/dxvk_swapchain_blitter.cpp
++++ b/src/dxvk/dxvk_swapchain_blitter.cpp
+@@ -8,6 +8,9 @@
+ #include <dxvk_present_frag_ms_blit.h>
+ #include <dxvk_present_vert.h>
+ 
++// The title's graphics menu row (platform/ps5/ps5_platform.cpp): the statistics are shown or not.
++extern "C" bool dirt3_ps5_hud_enabled();
++
+ namespace dxvk {
+   
+   DxvkSwapchainBlitter::DxvkSwapchainBlitter(
+@@ -41,7 +44,9 @@
+     std::unique_lock lock(m_mutex);
+ 
+     // Update HUD, if we have one
+-    if (m_hud)
++    const bool hudOn = m_hud != nullptr && dirt3_ps5_hud_enabled();
++
++    if (hudOn)
+       m_hud->update();
+ 
+     // Fix up default present areas if necessary
+@@ -68,7 +73,7 @@
+     // If we can't do proper blending, render the HUD into a separate image
+     bool composite = needsComposition(dstView);
+ 
+-    if (m_hud && composite)
++    if (hudOn && composite)
+       renderHudImage(ctx, dstView->mipLevelExtent(0));
+     else
+       destroyHudImage();
+@@ -117,7 +122,7 @@
+       srcView, srcRect, composite);
+ 
+     if (!composite) {
+-      if (m_hud)
++      if (hudOn)
+         m_hud->render(ctx, dstView);
+ 
+       if (m_cursorView)

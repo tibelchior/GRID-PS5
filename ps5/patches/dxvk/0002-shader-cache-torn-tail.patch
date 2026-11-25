@@ -1,0 +1,75 @@
+--- a/src/dxvk/dxvk_shader_cache.cpp
++++ b/src/dxvk/dxvk_shader_cache.cpp
+@@ -197,6 +197,32 @@
+   }
+ 
+ 
++  bool DxvkShaderCache::truncateLut(size_t length) {
++    auto path = m_filePaths.directory + env::PlatformDirSlash + m_filePaths.lutFile;
++
++    // The open stream is in a failed state after the short read: use new ones.
++    std::vector<char> prefix(length);
++
++    { util::File reader(path, util::FileFlags(util::FileFlag::AllowRead));
++
++      if (!reader || !reader.read(0u, length, prefix.data()))
++        return false;
++    }
++
++    m_lutFile = util::File();
++
++    { util::File writer(path, util::FileFlags(
++        util::FileFlag::AllowWrite, util::FileFlag::Truncate, util::FileFlag::Exclusive));
++
++      if (!writer || !writer.append(length, prefix.data()) || !writer.flush())
++        return false;
++    }
++
++    return m_lutFile.open(path, util::FileFlags(
++      util::FileFlag::AllowRead, util::FileFlag::AllowWrite, util::FileFlag::Exclusive));
++  }
++
++
+   bool DxvkShaderCache::parseLut() {
+     LutHeader header;
+ 
+@@ -215,16 +241,27 @@
+       return false;
+     }
+ 
++    size_t good = offset;
++
+     while (offset < size) {
+       LutKey k;
+       LutEntry e;
+ 
+       if (!readShaderLutEntry(k, e, offset)) {
+         Logger::warn("Failed to parse cache look-up table.");
+-        return false;
++
++        // The title can be ended from outside in the middle of an entry:
++        // keep the entries before it and cut the file there, instead of
++        // throwing the whole cache away.
++        if (!truncateLut(good))
++          return false;
++
++        Logger::info(str::format("Cache: kept ", m_lut.size(), " shaders before a cut-off entry"));
++        break;
+       }
+ 
+       m_lut.insert_or_assign(k, e);
++      good = offset;
+     }
+ 
+     auto cacheSize = m_binFile.size();;
+--- a/src/dxvk/dxvk_shader_cache.h
++++ b/src/dxvk/dxvk_shader_cache.h
+@@ -147,6 +147,8 @@
+ 
+     bool parseLut();
+ 
++    bool truncateLut(size_t length);
++
+     Rc<DxvkIrShader> loadCachedShaderLocked(const LutKey& key, const LutEntry& entry);
+ 
+     bool writeShaderLutEntry(DxvkIrShader& shader, const LutEntry& entry);

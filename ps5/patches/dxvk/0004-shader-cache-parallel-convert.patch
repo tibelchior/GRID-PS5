@@ -1,0 +1,72 @@
+--- a/src/dxvk/dxvk_shader_cache.cpp
++++ b/src/dxvk/dxvk_shader_cache.cpp
+@@ -7,6 +7,61 @@
+ 
+ namespace dxvk {
+ 
++  // Converting a shader is the slow part of filling the cache, and the writer
++  // does it for one shader at a time. A few more threads convert the shaders
++  // that wait in the queue (DXVK_SHADER_CACHE_THREADS, off by default); the
++  // writer then finds them done.
++  namespace {
++    struct ConvertPool {
++      dxvk::mutex                   mutex;
++      dxvk::condition_variable      cond;
++      std::queue<Rc<DxvkIrShader>>  queue;
++      bool                          started = false;
++    };
++
++    ConvertPool* convertPool() {
++      static ConvertPool* pool = new ConvertPool;
++      return pool;
++    }
++
++    void convertLater(const Rc<DxvkIrShader>& shader) {
++      static const int threads = std::atoi(env::getEnvVar("DXVK_SHADER_CACHE_THREADS").c_str());
++
++      if (threads <= 0)
++        return;
++
++      ConvertPool* pool = convertPool();
++      std::unique_lock lock(pool->mutex);
++
++      pool->queue.push(shader);
++      pool->cond.notify_one();
++
++      if (pool->started)
++        return;
++
++      pool->started = true;
++
++      for (int i = 0; i < threads; i++) {
++        dxvk::thread worker([pool] {
++          env::setThreadName("dxvk-convert");
++
++          for (;;) {
++            Rc<DxvkIrShader> next;
++
++            { std::unique_lock queueLock(pool->mutex);
++              pool->cond.wait(queueLock, [pool] { return !pool->queue.empty(); });
++              next = std::move(pool->queue.front());
++              pool->queue.pop(); }
++
++            next->getSerializedIr();
++          }
++        });
++
++        worker.detach();
++      }
++    }
++  }
++
+   DxvkShaderCache::Instance DxvkShaderCache::s_instance;
+ 
+   DxvkShaderCache::DxvkShaderCache()
+@@ -79,6 +134,7 @@
+ 
+     if (m_lut.find(k) == m_lut.end()) {
+       std::unique_lock lock(m_writeMutex);
++      convertLater(shader);
+       m_writeQueue.push(std::move(shader));
+       m_writeCond.notify_one();
+ 

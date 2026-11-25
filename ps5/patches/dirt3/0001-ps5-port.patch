@@ -1,0 +1,1518 @@
+diff -ruN a/platform/sdl/sdl_main.cpp b/platform/sdl/sdl_main.cpp
+--- a/platform/sdl/sdl_main.cpp	2026-11-19 22:12:13
++++ b/platform/sdl/sdl_main.cpp	2026-11-19 23:18:16
+@@ -15,6 +15,7 @@
+ #include <chrono>
+ #include <condition_variable>
+ #include <mutex>
++#include <cctype>
+ #include <cstdlib>
+ #include <cstring>
+ #include <filesystem>
+@@ -25,12 +26,17 @@
+ #include "../platform.h"
+ #include "recomp/host.h"
+ #include "recomp/startup_trace.h"
++#if defined(__PROSPERO__)
++#include "../ps5/ps5_console.h"
++#endif
+ #include "../../shims/vfs.h"
+ 
+ namespace shim {
+ void post_message(uint32_t hwnd, uint32_t msg, uint32_t wp, uint32_t lp);
+ void install_resolution_labels();
+-void install_menu_patches(bool metalfx_row);
++void install_menu_patches(bool metalfx_row, bool default_on = true, const char* title_id = nullptr);
++void install_glyph_patch();
++void install_grid_stats_row();
+ int read_metalfx_setting(const std::string& path);
+ }
+ 
+@@ -101,7 +106,7 @@
+ #endif
+ 
+ #if defined(SDL_PLATFORM_IOS) || defined(SDL_PLATFORM_TVOS) || defined(SDL_PLATFORM_VISIONOS) || \
+-    defined(SDL_PLATFORM_SWITCH) || defined(SDL_PLATFORM_ANDROID)
++    defined(SDL_PLATFORM_SWITCH) || defined(SDL_PLATFORM_ANDROID) || defined(__PROSPERO__)
+ // One window per screen: every top-level game window (the loading splash, then
+ // the main window) shares it; it goes away with the last one.
+ constexpr bool kSingleWindow = true;
+@@ -135,6 +140,10 @@
+         // deko3d presents to the native window itself (SDL_SWITCH_NATIVE_WINDOW, set in main).
+         const SDL_WindowFlags api = 0;
+ #endif
++#elif defined(__PROSPERO__)
++        // No window system: SDL's dummy window stands for the display, and DXVK's
++        // surface is the display's plane (platform/ps5/ps5_vulkan.cpp).
++        const SDL_WindowFlags api = 0;
+ #else
+         const SDL_WindowFlags api = renderer() == Renderer::DX11 ? SDL_WINDOW_METAL : SDL_WINDOW_VULKAN;
+ #endif
+@@ -172,7 +181,7 @@
+ }
+ 
+ void* metal_layer(Window w) {
+-#if defined(SDL_PLATFORM_ANDROID)
++#if defined(SDL_PLATFORM_ANDROID) || defined(__PROSPERO__)
+     return nullptr;
+ #else
+     static std::mutex mu;
+@@ -278,7 +287,16 @@
+ #endif
+         if (h > w) std::swap(w, h);  // the game runs landscape
+         std::vector<DisplayMode> out;
++#if defined(__PROSPERO__)
++        // SDL's dummy video driver reports 1080p, which is not the screen: the native size is 1440p
++        // (the game lays its picture out for the native mode), with 720p, 1080p and 4K as the other
++        // sizes, all of which the console's display takes (ps5_vulkan.cpp picks the output for them).
++        w = 2560;
++        h = 1440;
++        for (const float s : {0.5f, 0.75f, 1.0f, 1.5f})
++#else
+         for (const float s : {0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f})
++#endif
+             // Multiples of 8, so the game's half/quarter/eighth-size buffers stay whole.
+             out.push_back({(uint32_t(w * s) + 7) & ~7u, (uint32_t(h * s) + 7) & ~7u, hz, s});
+         rt::log("platform: render modes %ux%u x0.5 .. x2 at %u Hz", w, h, hz);
+@@ -291,6 +309,9 @@
+ #if defined(SDL_PLATFORM_SWITCH)
+     *width = 1280;
+     *height = 720;
++#elif defined(__PROSPERO__)
++    *width = 2560;  // the native mode of display_modes()
++    *height = 1440;
+ #else
+     on_main([&] {
+         const SDL_DisplayMode* m = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
+@@ -395,10 +416,36 @@
+     }).detach();
+ }
+ 
++#if defined(__PROSPERO__)
++// Startup marks, in <data>/boot.txt: each is written and the file closed at
++// once, so they survive whatever stops the process and do not depend on stderr
++// (a title's goes nowhere). The last line says how far the start got. <data> is
++// the title's data folder (g_ps5_data, /app0/data); the marks before it is set go
++// to /app0/data as well, and the file is rewritten from the start if that changes.
++std::string g_ps5_data;
++void ps5_mark(const char* what) {
++    static std::string all, target;
++    all += what;
++    all += '\n';
++    const std::string want = !g_ps5_data.empty() ? g_ps5_data : "/app0/data";
++    const bool fresh = want != target;
++    std::error_code ec;
++    if (fresh) std::filesystem::create_directories(want, ec);
++    if (std::FILE* f = std::fopen((want + "/boot.txt").c_str(), fresh ? "w" : "a")) {
++        if (fresh) std::fputs(all.c_str(), f);
++        else std::fprintf(f, "%s\n", what);
++        std::fclose(f);
++        target = want;
++    }
++}
++#else
++inline void ps5_mark(const char*) {}
++#endif
++
+ void* game_main(void*) {
+ #if defined(__APPLE__)
+     pthread_setname_np("game main");
+-#elif defined(__SWITCH__)
++#elif defined(__SWITCH__) || defined(__PROSPERO__)
+ #else
+     pthread_setname_np(pthread_self(), "game main");
+ #endif
+@@ -413,6 +460,7 @@
+         watch_metalfx_setting(g_hw_config);
+     }
+     X86* c = rt::create_main_thread();
++    ps5_mark("entering guest");
+     rt::log("entering guest at 0x%08X", recomp_image_info.entry);
+     const uint32_t r = rt::invoke(c, recomp_image_info.entry, {}, true);
+     rt::log("guest entry returned %u", r);
+@@ -422,14 +470,125 @@
+     platform::exit_process(r);
+ #else
+     g_guest_done = true;
++#if defined(__PROSPERO__)
++    ps5::quit(int(r));
++#else
+     std::exit(int(r));
+ #endif
++#endif
+ }
+ 
++#if defined(__PROSPERO__)
++// The title's log keeps only errors: DXVK and runtime lines with "err"/"fail"/..., and the whole of a
++// crash or fatal report (its register and stack lines follow it). An empty file named "verbose" in the
++// data folder keeps everything, as before.
++bool g_log_all = false;
++void log_errors_only(const char* data, size_t size, std::string& out) {
++    static std::string partial;
++    static bool in_report = false;
++    partial.append(data, size);
++    size_t from = 0;
++    for (size_t nl; (nl = partial.find('\n', from)) != std::string::npos; from = nl + 1) {
++        const std::string line = partial.substr(from, nl - from);
++        bool keep = false;
++        if (line.find("CRASH") != std::string::npos || line.find("crash at") != std::string::npos ||
++            line.find("FATAL") != std::string::npos || line.find("quitting (") != std::string::npos ||
++            line.find("ExitProcess(") != std::string::npos) {
++            in_report = keep = true;
++        } else if (in_report && (line.empty() || line[0] == ' ' || line.rfind("[rt]", 0) == 0)) {
++            keep = true;
++        } else {
++            in_report = false;
++            std::string low = line;
++            for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
++            for (const char* word : {"error", "err:", "fail", "cannot", "not implemented", "unimplemented", "abort", "invalid", "game folder"})
++                if (low.find(word) != std::string::npos) {
++                    keep = true;
++                    break;
++                }
++        }
++        if (keep) {
++            out += line;
++            out += '\n';
++        }
++    }
++    partial.erase(0, from);
++    if (partial.size() > 8192) partial.clear();  // a line that never ends
++}
++#endif
++
+ // Copies everything written to stderr (our log, fatal errors with guest
+ // registers, DXVK) into <data>/grid.log as well: on iOS the console is gone
+ // unless a debugger is attached.
+ void tee_stderr(const std::string& path) {
++#if defined(__PROSPERO__)
++    // A title has no usable stderr to copy from, and the first title build left
++    // this log empty: stderr goes straight to the file, line buffered, so a
++    // crash keeps everything before it.
++    std::rename(path.c_str(), (path.substr(0, path.size() - 4) + ".prev.log").c_str());
++    if (!std::freopen(path.c_str(), "w", stderr)) {
++        ps5_mark("tee_stderr: freopen of the log failed");
++        return;
++    }
++    std::setvbuf(stderr, nullptr, _IOLBF, 0);
++    // A write to the log file freezes the game's frames for 0.2-0.9 s on the console, whichever
++    // thread makes it (measured: every stall followed a line reaching this file, also when a
++    // thread of its own wrote it). So stderr goes to a pipe, and a thread keeps what arrives
++    // in memory: it writes the file as lines come for the first 30 s (start-up problems), then
++    // every 30 s, and at once when a crash or fatal error is reported (which then sleeps before
++    // exiting). A title closed from the console's menu loses up to its last 30 s of log.
++    {
++        const int fd = fileno(stderr);
++        const int file = dup(fd);
++        int fds[2];
++        if (file < 0 || pipe(fds) != 0) {
++            ps5_mark("tee_stderr: no pipe; the log is written directly");
++            return;
++        }
++        dup2(fds[1], fd);
++        close(fds[1]);
++        g_log_all = std::filesystem::exists(path.substr(0, path.rfind('/')) + "/verbose");
++        static int copy_fds[2];
++        copy_fds[0] = fds[0];
++        copy_fds[1] = file;
++        pthread_t writer;
++        const int rc = pthread_create(&writer, nullptr, [](void*) -> void* {
++            static char buf[65536];
++            std::string held;
++            const auto start = std::chrono::steady_clock::now();
++            auto last_write = start;
++            bool urgent = false;
++            for (;;) {
++                const ssize_t n = read(copy_fds[0], buf, sizeof buf);
++                if (n <= 0) break;
++                if (g_log_all) held.append(buf, size_t(n));
++                else log_errors_only(buf, size_t(n), held);
++                urgent = urgent || held.find("CRASH") != std::string::npos || held.find("quitting (") != std::string::npos || held.find("ExitProcess(") != std::string::npos || held.find("FATAL") != std::string::npos;
++                const auto now = std::chrono::steady_clock::now();
++                if (!urgent && now - start > std::chrono::seconds(30) && now - last_write < std::chrono::seconds(30) &&
++                    held.size() < (1u << 20))
++                    continue;
++                for (size_t done = 0; done < held.size();) {
++                    const ssize_t w = write(copy_fds[1], held.data() + done, held.size() - done);
++                    if (w <= 0) return nullptr;
++                    done += size_t(w);
++                }
++                const auto took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - now).count();
++                last_write = std::chrono::steady_clock::now();
++                const size_t bytes = held.size();
++                held.clear();
++                if (took > 20) {
++                    char note[96];
++                    held.append(note, size_t(std::snprintf(note, sizeof note, "[log] writing %zu bytes to the file took %.0f ms\n", bytes, took)));
++                }
++            }
++            return nullptr;
++        }, nullptr);
++        if (rc != 0) dup2(file, fd);  // no thread: straight to the file again
++        else pthread_detach(writer);
++    }
++    return;
++#endif
+ #if defined(SDL_PLATFORM_SWITCH)
+     // No console and no pipes on Horizon: stderr goes straight to the file
+     // (line buffered, so a crash keeps everything before it).
+@@ -531,13 +690,23 @@
+ // DXVK opens it read-write. This device's own recording adds to the shipped one.
+ void setup_pipeline_warmup(const std::string& data) {
+     namespace fs = std::filesystem;
++#if defined(__PROSPERO__)
++    // The title's own folder, where ps5-spike/build_headless.sh puts the shipped files.
++    struct { const char* operator()() const { return "/app0/"; } } shipped_base;
++#else
++    auto shipped_base = [] { return SDL_GetBasePath(); };
++#endif
+     setenv("DXVK_SHADER_CACHE_NAME", "grid", 0);
++#if defined(__PROSPERO__)
++    // Converting shaders for the cache is slow on one thread: four convert them in parallel.
++    setenv("DXVK_SHADER_CACHE_THREADS", "4", 0);
++#endif
+ #if !defined(SDL_PLATFORM_IOS) && !defined(SDL_PLATFORM_TVOS) && !defined(SDL_PLATFORM_VISIONOS)
+     setenv("MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION", "1", 0);
+ #endif
+     const std::string recorded = data + "/grid.pipelines";
+     std::string warmup = recorded;
+-    if (const char* b = SDL_GetBasePath()) {
++    if (const char* b = shipped_base()) {
+         const std::string base = b;
+         std::error_code ec;
+         if (fs::exists(base + "grid.pipelines", ec)) warmup = base + "grid.pipelines:" + warmup;
+@@ -641,6 +810,7 @@
+ #endif
+ 
+ int main(int argc, char** argv) {
++    ps5_mark("main");
+     std::string dir;
+     if (const char* e = std::getenv("DIRT3_GAME_DIR")) dir = e;
+     for (int i = 1; i + 1 < argc; ++i)
+@@ -672,6 +842,74 @@
+             return 2;
+         }
+     }
++#elif defined(__PROSPERO__)
++    // PS5: no arguments or environment. An installed title sees only its own
++    // folder, as /app0. The game folder (the PC game's, with dirt3_game.exe) is
++    // looked for there, in any spelling of its name, and our data (log, saves,
++    // settings, boot.txt) goes in /app0/data, never inside the game folder. <data>/env.txt holds
++    // KEY=VALUE lines (the debug switches).
++    {
++        namespace fs = std::filesystem;
++        auto has_exe = [](const fs::path& d) {
++            std::error_code ec;
++            if (!fs::is_directory(d, ec)) return false;
++            for (const auto& e : fs::directory_iterator(d, ec)) {
++                std::string n = e.path().filename().string();
++                for (char& ch : n) ch = char(std::tolower((unsigned char)ch));
++                if (n == "grid_game.exe") return true;
++            }
++            return false;
++        };
++        // The folder itself, or one level down (any name), under each root.
++        auto find_in = [&](const fs::path& root) -> std::string {
++            if (has_exe(root)) return root.string();
++            std::error_code ec;
++            for (const auto& e : fs::directory_iterator(root, ec))
++                if (has_exe(e.path())) return e.path().string();
++            return {};
++        };
++        if (dir.empty())
++            if (const char* e = std::getenv("DIRT3_GAME_DIR")) dir = e;
++        for (const char* root : {"/app0", "/data/homebrew/PPSA99779", "/data/grid"}) {
++            if (!dir.empty()) break;
++            dir = find_in(root);
++        }
++        if (dir.empty()) {
++            ps5_mark("game folder not found (looked in /app0, /data/homebrew/PPSA99779, /data/grid)");
++            return 2;
++        }
++        // Data goes beside the game folder, in the title's own "data" folder
++        // (/app0/data = /data/homebrew/PPSA99779/data); the game folder stays untouched.
++        std::string data;
++        std::error_code ec;
++        for (const char* d : {"/app0/data", "/data/homebrew/PPSA99779/data", "/data/grid/data"}) {
++            fs::create_directories(d, ec);
++            if (!ec) { data = d; break; }
++            ps5_mark((std::string("cannot create ") + d + ": " + ec.message()).c_str());
++        }
++        if (data.empty()) return 2;
++        g_ps5_data = data;
++        setenv("DIRT3_DATA_DIR", data.c_str(), 0);
++        ps5_mark(("game folder " + dir).c_str());
++        ps5_mark(("data folder " + data).c_str());
++        // SDL has no PS5 video or audio driver yet: its dummy ones, which it only
++        // uses when they are asked for by name. As hints, not environment variables:
++        // SDL reads its own copy of the environment, which in a title does not see
++        // setenv (the first title run with logging: "No available video device").
++        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
++        SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
++        if (std::FILE* f = std::fopen((data + "/env.txt").c_str(), "r")) {
++            char line[1024];
++            while (std::fgets(line, sizeof line, f)) {
++                std::string l = line;
++                while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) l.pop_back();
++                const size_t eq = l.find('=');
++                if (l.empty() || l[0] == '#' || eq == std::string::npos) continue;
++                setenv(l.substr(0, eq).c_str(), l.substr(eq + 1).c_str(), 1);
++            }
++            std::fclose(f);
++        }
++    }
+ #elif defined(SDL_PLATFORM_ANDROID)
+     // Private app storage has stable POSIX ownership. Shell-created external
+     // directories can remain inaccessible under Android scoped-storage rules.
+@@ -807,6 +1045,8 @@
+ #endif
+         rt::set_discovery_log(data + "/recomp_discovered.txt");
+         tee_stderr(data + "/grid.log");
++        ps5_mark("log opened");
++        rt::log("game folder %s, data folder %s", dir.c_str(), data.c_str());
+ #if defined(__SWITCH2__)
+         switch_platform::boost_cpu_clock();
+ #endif
+@@ -820,6 +1060,38 @@
+         // DIRT3_PROFILE=1, or a file named "profile" in the data folder (iOS has no environment).
+         if (std::getenv("DIRT3_PROFILE") || std::filesystem::exists(data + "/profile")) rt::start_profiler();
+         setup_pipeline_warmup(data);
++#if defined(__PROSPERO__)
++        // Frame-rate tests, by empty files in the data folder: "hud" draws DXVK's frame-time graph,
++        // "novsync" asks DXVK for a present mode that does not wait for the display (the log's
++        // "Present mode" line says which one the console allows).
++        // The game reads its exposure back from the GPU every frame and waits for it; as on the
++        // Switch and Android, take the newest finished one instead (shims/d3d11/bridge.cpp).
++        setenv("DIRT3_DX11_FRESH_EXPOSURE", "1", 0);
++        setenv("DIRT3_DX11_ASYNC_EXPOSURE", "1", 0);
++        // DXVK's statistics display is always created; the graphics menu's extra row switches it.
++        setenv("DXVK_HUD", "fps,frametimes,drawcalls,pipelines,dirt3keyboard", 0);
++        std::string dxvk_config;
++        if (std::filesystem::exists(data + "/novsync")) dxvk_config += "dxgi.syncInterval = 0; ";
++        // DXVK sizes its shader-compiler pool from the CPU count (16 here); those threads compete with
++        // the game's loader and worker threads while the shaders of a new scene compile. A file
++        // "compilethreads" holding a number changes the 4 used here.
++        unsigned compile_threads = 4;
++        if (FILE* f = std::fopen((data + "/compilethreads").c_str(), "r")) {
++            unsigned n = 0;
++            if (std::fscanf(f, "%u", &n) == 1 && n >= 1 && n <= 16) compile_threads = n;
++            std::fclose(f);
++        }
++        dxvk_config += "dxvk.numCompilerThreads = " + std::to_string(compile_threads) + "; ";
++        // A file "fpscap" holding a number (30, 40, ...) limits the frame rate: below the display's
++        // 60 Hz, a game that runs at 38-42 fps shows frames of uneven length, and a steady 30 can
++        // look smoother.
++        if (FILE* f = std::fopen((data + "/fpscap").c_str(), "r")) {
++            unsigned cap = 0;
++            if (std::fscanf(f, "%u", &cap) == 1 && cap >= 10 && cap <= 240) dxvk_config += "dxvk.maxFrameRate = " + std::to_string(cap) + "; ";
++            std::fclose(f);
++        }
++        if (!dxvk_config.empty()) setenv("DXVK_CONFIG", dxvk_config.c_str(), 0);
++#endif
+     }
+     // SDL's GameController (MFi) driver reports some pads (Backbone One) as
+     // connected but never delivers their input. Without it, Xbox/PlayStation/
+@@ -838,10 +1110,13 @@
+     // The D3D9-on-deko3d device owns the NWindow's buffers: SDL must not put an EGL surface on it.
+     SDL_SetHint("SDL_SWITCH_NATIVE_WINDOW", "1");
+ #endif
++    ps5_mark("SDL_Init");
+     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_EVENTS)) {
+         std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
++        ps5_mark("SDL_Init failed");
+         return 1;
+     }
++    ps5_mark("SDL started");
+ #if defined(DIRT3_SWITCH_DXVK)
+     if (const char* test = std::getenv("DIRT3_DX11_PREFLIGHT_ONLY"); test && std::strcmp(test, "0")) {
+         // Keep game pipeline replay and HUD draws out of the isolated GPU test.
+@@ -877,21 +1152,40 @@
+     g_hw_config = data + "/C/Users/Player/Documents/Codemasters/GRID/hardwaresettings/hardware_settings_config.xml";
+ 
+     rt::startup_trace("startup.guest-memory.begin");
+-    if (!rt::mem_init()) return 1;
++    ps5_mark("mem_init");
++    if (!rt::mem_init()) {
++        ps5_mark("mem_init failed");
++        return 1;
++    }
++    ps5_mark("load_image");
+     rt::startup_trace("startup.guest-memory.end");
+     std::string err;
+     if (!rt::load_image(dir + "/grid_game.exe", err)) {
+         std::fprintf(stderr, "error: %s\n", err.c_str());
++        ps5_mark("load_image failed");
+         return 1;
+     }
++    ps5_mark("image loaded");
++#if !defined(__PROSPERO__)  // the console's sandbox refuses it; the game works without
+     if (chdir(dir.c_str()) != 0) rt::log("warning: cannot chdir to %s", dir.c_str());
++#else
++    (void)chdir(dir.c_str());
++#endif
+ #if defined(SDL_PLATFORM_SWITCH)
+     switch_platform::install_resolution_restrictions();
+     switch_platform::install_worker_topology();
+ #endif
+     if (std::getenv("GRID_LOGFLAG")) wr8(0xE58DC0, 1);  // debug: enable the game's own logger
+     shim::install_resolution_labels();
++#if defined(__PROSPERO__)
++    // The resolution-cap overlay (install_menu_patches), the PlayStation glyphs and the graphics
++    // menu's Statistics row (the aspect row, retitled: shims/frontend/grid_stats_row.cpp).
++    shim::install_menu_patches(false, false, "lng_stats");
++    shim::install_glyph_patch();
++    shim::install_grid_stats_row();
++#else
+     shim::install_menu_patches(platform::metalfx_supported());
++#endif
+ 
+ #if defined(DIRT3_SWITCH_DXVK)
+     switch_platform::start_dx11_startup_watchdog();
+@@ -901,11 +1194,25 @@
+     // Guest call depth nests host frames. Horizon commits the whole stack up front.
+ #if defined(SDL_PLATFORM_SWITCH)
+     pthread_attr_setstacksize(&attr, 64u << 20);
++#elif defined(__PROSPERO__)
++    rt::set_host_stack(&attr, 64u << 20);  // direct memory in a title (runtime/src/thread.cpp)
+ #else
+     pthread_attr_setstacksize(&attr, 256u << 20);
+ #endif
+     pthread_t th;
+-    pthread_create(&th, &attr, game_main, nullptr);
++#if defined(__PROSPERO__)
++    // Timing of the console's basic operations, only when a file named "bench" is in the data folder.
++    if (std::filesystem::exists(g_ps5_data + "/bench")) ps5::benchmark();
++    ps5::hide_splash();  // or the shell's launch background stays over the game's frames
++    ps5_mark("splash dismissed");
++#endif
++    ps5_mark("starting the game thread");
++    if (const int rc = pthread_create(&th, &attr, game_main, nullptr)) {
++        rt::log("pthread_create for the game thread failed: %d", rc);
++        ps5_mark("game thread: pthread_create failed");
++        return 1;
++    }
++    ps5_mark("game thread started; pumping events");
+ 
+     // Main thread: pump events (this also runs SDL_RunOnMainThread callbacks).
+     while (!g_guest_done) {
+diff -ruN a/runtime/include/recomp/host.h b/runtime/include/recomp/host.h
+--- a/runtime/include/recomp/host.h	2026-11-18 14:11:02
++++ b/runtime/include/recomp/host.h	2026-11-19 23:18:16
+@@ -1,6 +1,7 @@
+ // Host-side runtime API used by shims and the platform layer (C++ only).
+ #pragma once
+ 
++#include <pthread.h>
+ #include <cstdint>
+ #if defined(__SWITCH__)
+ #include <atomic>
+@@ -55,6 +56,13 @@
+                       std::function<void(uint32_t)> on_exit);
+ // Decrements the suspend count; returns the previous count or -1.
+ int resume_thread(uint32_t id);
++// Gives a thread about to be created a host stack of this size (a PS5 title's
++// comes from direct memory, not from the title's small flexible budget).
++void set_host_stack(pthread_attr_t* attr, size_t bytes);
++// Frees the calling thread's function lookup cache; a guest thread calls it as it ends.
++void release_lookup_cache();
++// Lookups that missed the calling thread's cache, so far (for the logs).
++uint64_t slow_lookup_count();
+ [[noreturn]] void exit_current_thread(uint32_t code);
+ 
+ // ---- dispatch (dispatch.cpp) ----
+@@ -83,8 +91,14 @@
+ #if defined(__SWITCH__)
+ extern std::atomic<bool> profile_indirect_enabled;
+ extern thread_local std::atomic<uint64_t> profile_indirect_context;
++#endif
++#if defined(__SWITCH__) || defined(__PROSPERO__)
+ void profile_register_thread(uint32_t entry, uint32_t guest_id);
+ void profile_unregister_thread();
++#endif
++#if defined(__PROSPERO__)
++// Called at every present: a frame over 200 ms gets a stall report (runtime/src/profiler_ps5.cpp).
++void profile_frame();
+ #endif
+ std::string game_dir();
+ void set_game_dir(const std::string& d);
+diff -ruN a/runtime/src/cpu.cpp b/runtime/src/cpu.cpp
+--- a/runtime/src/cpu.cpp	2026-11-18 14:49:46
++++ b/runtime/src/cpu.cpp	2026-11-19 23:18:16
+@@ -1,4 +1,7 @@
+ // CPU services called from generated code, plus logging.
++#if defined(__PROSPERO__)
++#include <ucontext.h>
++#endif
+ #include <chrono>
+ #include <cmath>
+ #include <cstdarg>
+@@ -107,10 +110,38 @@
+ }
+ 
+ #if !defined(__SWITCH__)
+-void crash_handler(int sig, siginfo_t* info, void*) {
++void crash_handler(int sig, siginfo_t* info, void* context) {
+     char what[32];
+     std::snprintf(what, sizeof what, "signal %d", sig);
++#if defined(__PROSPERO__)
++    // No backtrace on the console: the faulting instruction and stack pointer, with this
++    // function's own address to place them in the title's image.
++    if (const auto* uc = static_cast<const ucontext_t*>(context))
++        std::fprintf(stderr, "[rt] crash at rip %p, rsp %p (crash_handler is at %p)\n",
++                     reinterpret_cast<void*>(uc->uc_mcontext.mc_rip), reinterpret_cast<void*>(uc->uc_mcontext.mc_rsp),
++                     reinterpret_cast<void*>(&crash_handler));
++    // Return addresses still on the stack: the words that point into the title's code.
++    if (const auto* uc = static_cast<const ucontext_t*>(context)) {
++        const auto self = reinterpret_cast<uintptr_t>(&crash_handler);
++        const auto* sp = reinterpret_cast<const uintptr_t*>(uc->uc_mcontext.mc_rsp & ~uintptr_t(7));
++        std::fprintf(stderr, "[rt] rdi %p rsi %p rax %p r15 %p\n", reinterpret_cast<void*>(uc->uc_mcontext.mc_rdi),
++                     reinterpret_cast<void*>(uc->uc_mcontext.mc_rsi), reinterpret_cast<void*>(uc->uc_mcontext.mc_rax),
++                     reinterpret_cast<void*>(uc->uc_mcontext.mc_r15));
++        std::fprintf(stderr, "[rt] code addresses on the stack:");
++        for (int i = 0, found = 0; i < 512 && found < 24; ++i)
++            if (sp[i] + (256u << 20) > self && sp[i] < self + (256u << 20)) {
++                std::fprintf(stderr, " %p", reinterpret_cast<void*>(sp[i]));
++                ++found;
++            }
++        std::fprintf(stderr, "\n");
++    }
++#else
++    (void)context;
++#endif
+     report_crash(what, reinterpret_cast<uintptr_t>(info->si_addr));
++#if defined(__PROSPERO__)
++    usleep(500 * 1000);  // the log is written by another thread (tee_stderr): let it finish
++#endif
+     _exit(128 + sig);
+ }
+ #endif
+diff -ruN a/runtime/src/dispatch.cpp b/runtime/src/dispatch.cpp
+--- a/runtime/src/dispatch.cpp	2026-11-18 14:11:02
++++ b/runtime/src/dispatch.cpp	2026-11-19 23:18:16
+@@ -6,6 +6,7 @@
+ #include <cstdio>
+ #include <mutex>
+ #include <memory>
++#include <pthread.h>
+ #include <string>
+ #include <unordered_map>
+ 
+@@ -56,7 +57,9 @@
+ // in shared slots allows colliding writers to publish A's address with B's
+ // function, even when readers recheck the address. Per-thread slots also avoid
+ // cache-line contention between the engine's workers.
+-constexpr uint32_t kCacheBits = 12;
++// 15 bits: a direct-mapped cache of 4096 slots lost a good part of the game's indirect call
++// targets to collisions, and each miss takes a lock and two searches.
++constexpr uint32_t kCacheBits = 15;
+ struct CacheSlot { uint32_t addr = 0; recomp_fn fn = nullptr; };
+ struct LookupCache {
+     uint64_t generation = 0;
+@@ -65,7 +68,23 @@
+ std::atomic<uint64_t> g_cache_generation{1};
+ // Keep only the owner pointer in static TLS. libnx reserves TLS inside supplied
+ // thread stacks, including the64KiB native watchdog/profiler stacks.
+-thread_local std::unique_ptr<LookupCache> g_cache;
++// A plain pointer, freed by release_lookup_cache when a guest thread ends, and not a
++// unique_ptr: its destructor would run from a thread-exit hook, and on the PS5 that hook can
++// run after the thread's thread-local storage is freed (it then freed whatever the freed
++// storage held, and crashed in the allocator when the game's first worker thread ended).
++#if defined(__PROSPERO__)
++// Emulated thread-local storage costs a call to __emutls_get_address on the console (7 ns);
++// pthread_getspecific is 2 ns, and this runs for every indirect call.
++pthread_key_t g_cache_key;
++const int g_cache_key_ready = pthread_key_create(&g_cache_key, nullptr);
++inline LookupCache* cache_get() { return static_cast<LookupCache*>(pthread_getspecific(g_cache_key)); }
++inline void cache_set(LookupCache* c) { pthread_setspecific(g_cache_key, c); }
++#else
++thread_local LookupCache* g_cache = nullptr;
++inline LookupCache* cache_get() { return g_cache; }
++inline void cache_set(LookupCache* c) { g_cache = c; }
++#endif
++std::atomic<uint64_t> g_slow_lookups{0};
+ 
+ CacheSlot& slot_for(LookupCache& cache, uint32_t addr) {
+     return cache.slots[(addr * 0x9E3779B1u) >> (32 - kCacheBits)];
+@@ -74,6 +93,7 @@
+ void invalidate_cached() { g_cache_generation.fetch_add(1, std::memory_order_release); }
+ 
+ recomp_fn lookup_slow(uint32_t addr) {
++    g_slow_lookups.fetch_add(1, std::memory_order_relaxed);
+     const RecompFnEntry* b = recomp_fn_table;
+     const RecompFnEntry* e = recomp_fn_table + recomp_fn_count;
+     const RecompFnEntry* it = std::lower_bound(b, e, addr, [](const RecompFnEntry& x, uint32_t a) { return x.addr < a; });
+@@ -88,11 +108,13 @@
+ 
+ recomp_fn lookup(uint32_t addr) {
+     const uint64_t generation = g_cache_generation.load(std::memory_order_acquire);
+-    if (!g_cache) {
+-        g_cache = std::make_unique<LookupCache>();
+-        g_cache->generation = generation;
++    LookupCache* owned = cache_get();
++    if (!owned) {
++        owned = new LookupCache();
++        owned->generation = generation;
++        cache_set(owned);
+     }
+-    LookupCache& cache = *g_cache;
++    LookupCache& cache = *owned;
+     if (cache.generation != generation) {
+         for (auto& slot : cache.slots) slot = {};
+         cache.generation = generation;
+@@ -103,6 +125,13 @@
+     if (fn && addr) c = {addr, fn};
+     return fn;
+ }
++
++void release_lookup_cache() {
++    delete cache_get();
++    cache_set(nullptr);
++}
++
++uint64_t slow_lookup_count() { return g_slow_lookups.load(std::memory_order_relaxed); }
+ 
+ uint32_t invoke(X86* c, uint32_t addr, std::initializer_list<uint32_t> args, bool callee_pops) {
+     recomp_fn fn = lookup(addr);
+diff -ruN a/runtime/src/memory.cpp b/runtime/src/memory.cpp
+--- a/runtime/src/memory.cpp	2026-11-18 14:11:02
++++ b/runtime/src/memory.cpp	2026-11-19 23:18:16
+@@ -19,11 +19,17 @@
+ #if defined(__SWITCH2__)
+ #include <switch2/memory/heap.h>
+ #endif
++#elif defined(__PROSPERO__)
++#include <ps5platform/kernel.h>
++#include <ps5platform/shm.h>
++#include <sys/mman.h>
++#include <unistd.h>
+ #else
+ #include <sys/mman.h>
+ #include <unistd.h>
+ #endif
+ 
++#include <algorithm>
+ #include <cerrno>
+ #include <cstring>
+ #include <map>
+@@ -183,6 +189,78 @@
+     }
+ }
+ 
++#elif defined(__PROSPERO__)
++
++// PS5, an installed title: its anonymous mappings are charged to its small
++// flexible budget, so the window is a reserved virtual range and committed
++// ranges get direct memory mapped in, in its 64 KB units (ps5platform/shm.h).
++// As on Horizon, backing stays mapped; release/decommit zero it.
++// PS5, a payload started by an ELF loader: the process has no direct memory
++// (sceKernelGetDirectMemorySize is 0), so the window is one anonymous mapping,
++// as on other POSIX hosts.
++constexpr uint32_t kChunk = 0x10000;          // direct-memory unit (allocation granularity)
++constexpr uint32_t kMaxRun = 64 * 1024 * 1024;  // one direct-memory allocation at most
++std::vector<bool> g_mapped(kSpace / kChunk);  // chunk is backed by memory
++uint64_t g_mapped_bytes = 0;
++bool g_direct = false;                        // direct memory backs the window
++
++// Commit: backs every unbacked chunk of [addr, addr + size), coalescing runs.
++void os_commit(uint32_t addr, uint32_t size) {
++    if (!size || !g_direct) return;
++    uint32_t c = std::max<uint32_t>(addr & ~(kChunk - 1), kAllocFloor) / kChunk;
++    const uint32_t end = uint32_t(std::min<uint64_t>(kSpace,
++        (uint64_t(addr) + size + kChunk - 1) & ~uint64_t(kChunk - 1)) / kChunk);
++    while (c < end) {
++        if (g_mapped[c]) {
++            ++c;
++            continue;
++        }
++        uint32_t e = c;
++        while (e < end && !g_mapped[e] && e - c < kMaxRun / kChunk) ++e;
++        uint8_t* const at = recomp_mem + uint64_t(c) * kChunk;
++        const size_t n = size_t(e - c) * kChunk;
++        // One direct-memory allocation for the run, mapped over its part of the
++        // reservation. (Not ps5_vrange_commit: the SDK revision PS5_Vulkan pins
++        // does not have it yet.) The mapping is kept for the life of the process.
++        ps5_shm backing{};
++        void* view = nullptr;
++        int rc = ps5_shm_create(n, &backing);
++        const char* stage = "ps5_shm_create";
++        if (!rc) {
++            stage = "ps5_shm_map";
++            rc = ps5_shm_map(&backing, 0, n, at, PS5_SHM_READ | PS5_SHM_WRITE, PS5_SHM_FIXED, &view);
++            if (!rc && view != at) rc = PS5_SHM_NO_PLACE;
++        }
++        if (rc) fatal("guest commit 0x%08X+0x%zX failed in %s: 0x%X (%llu MB backed)", unsigned(c * kChunk), n, stage,
++                      unsigned(rc), (unsigned long long)(g_mapped_bytes >> 20));
++        std::memset(at, 0, n);  // direct memory is handed out as it was released
++        for (uint32_t k = c; k < e; ++k) g_mapped[k] = true;
++        g_mapped_bytes += n;
++        c = e;
++    }
++}
++
++// Zeroes the backed parts of [addr, addr + size): unbacked pages are not there to clear.
++void zero_range(uint32_t addr, uint32_t size) {
++    if (!g_direct) {
++        // Replacing the mapping returns the pages to the OS and guarantees zeroes.
++        const uintptr_t p = reinterpret_cast<uintptr_t>(recomp_mem) + addr;
++        const uintptr_t pg = 0x4000;  // the console's page
++        const uintptr_t lo = (p + pg - 1) & ~(pg - 1), hi = (p + size) & ~(pg - 1);
++        if (hi > lo)
++            mmap(reinterpret_cast<void*>(lo), hi - lo, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
++        if (lo > p) std::memset(reinterpret_cast<void*>(p), 0, std::min<uintptr_t>(lo - p, size));
++        if (hi >= lo && p + size > hi && hi >= p) std::memset(reinterpret_cast<void*>(hi), 0, p + size - hi);
++        return;
++    }
++    const uint64_t end = uint64_t(addr) + size;
++    for (uint64_t a = addr; a < end;) {
++        const uint64_t next = std::min<uint64_t>((a / kChunk + 1) * kChunk, end);
++        if (g_mapped[a / kChunk]) std::memset(recomp_mem + a, 0, size_t(next - a));
++        a = next;
++    }
++}
++
+ #else
+ 
+ void os_commit(uint32_t, uint32_t) {}  // demand-zero mapping: nothing to do
+@@ -259,6 +337,26 @@
+     }
+     recomp_mem = static_cast<uint8_t*>(m);  // the low 64 KB are never committed
+     g_code_alias = static_cast<uint8_t*>(alias);
++#elif defined(__PROSPERO__)
++    g_direct = sceKernelGetDirectMemorySize() > 0;
++    void* m = nullptr;
++    if (g_direct) {
++        const int rc = ps5_vrange_reserve(kSpace, nullptr, 0, &m);
++        if (rc || !m) {
++            log("mem_init: cannot reserve 4 GB of address space (0x%X)", unsigned(rc));
++            return false;
++        }
++        log("mem_init: guest memory on direct memory (installed title)");
++    } else {
++        m = mmap(nullptr, kSpace, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
++        if (m == MAP_FAILED) {
++            log("mem_init: cannot map 4 GB of anonymous memory (errno %d)", errno);
++            return false;
++        }
++        mprotect(m, 0x10000, PROT_NONE);
++        log("mem_init: no direct memory in this process (payload); guest memory on an anonymous mapping");
++    }
++    recomp_mem = static_cast<uint8_t*>(m);  // the low 64 KB are never accessible
+ #else
+     void* m = mmap(nullptr, kSpace, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+     if (m == MAP_FAILED) {
+@@ -272,7 +370,7 @@
+ }
+ 
+ uint64_t committed_bytes() {
+-#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(__PROSPERO__)
+     std::lock_guard lk(g_mu);
+     return g_mapped_bytes;
+ #else
+diff -ruN a/runtime/src/profiler.cpp b/runtime/src/profiler.cpp
+--- a/runtime/src/profiler.cpp	2026-11-18 14:49:46
++++ b/runtime/src/profiler.cpp	2026-11-19 23:18:16
+@@ -165,7 +165,7 @@
+ 
+ }  // namespace rt
+ 
+-#elif !defined(__SWITCH__)
++#elif !defined(__SWITCH__) && !defined(__PROSPERO__)
+ namespace rt {
+ void start_profiler() {}
+ }  // namespace rt
+diff -ruN a/runtime/src/thread.cpp b/runtime/src/thread.cpp
+--- a/runtime/src/thread.cpp	2026-11-18 14:11:02
++++ b/runtime/src/thread.cpp	2026-11-19 23:18:16
+@@ -2,7 +2,11 @@
+ // and a copy of the image's static TLS block.
+ #include <pthread.h>
+ #include <cstdio>
++#include <cstdlib>
+ #include <setjmp.h>
++#if defined(__PROSPERO__)
++#include <ps5platform/kernel.h>
++#endif
+ 
+ #include <atomic>
+ #include <condition_variable>
+@@ -33,8 +37,9 @@
+ 
+ constexpr uint32_t kTebSize = 0x1000;
+ // Guest call depth maps onto the host stack. Horizon commits a thread's whole
+-// stack up front (from the heap), so guest threads get less there.
+-#if defined(__SWITCH__)
++// stack up front (from the heap), so guest threads get less there; so does a
++// PS5 title, whose stacks are direct memory (set_host_stack).
++#if defined(__SWITCH__) || defined(__PROSPERO__)
+ constexpr size_t kHostStack = 16u << 20;
+ #else
+ constexpr size_t kHostStack = 64u << 20;
+@@ -97,7 +102,7 @@
+ void* thread_main(void* arg) {
+     auto* t = static_cast<Thread*>(arg);
+     t_cur = t;
+-#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(__PROSPERO__)
+     profile_register_thread(t->entry, t->id);
+ #endif
+     {
+@@ -106,8 +111,8 @@
+         std::snprintf(name, sizeof name, "guest %08X", t->entry);
+ #if defined(__APPLE__)
+         pthread_setname_np(name);
+-#elif defined(__SWITCH__)
+-        (void)name;  // newlib only declares pthread_setname_np for _GNU_SOURCE; not worth it here
++#elif defined(__SWITCH__) || defined(__PROSPERO__)
++        (void)name;  // newlib only declares pthread_setname_np for _GNU_SOURCE; the PS5 libc has none
+ #else
+         pthread_setname_np(pthread_self(), name);
+ #endif
+@@ -118,7 +123,8 @@
+     }
+     if (setjmp(t->exit_jmp) == 0) t->exit_code = invoke(&t->cpu, t->entry, {t->param}, true);
+     if (t->on_exit) t->on_exit(t->exit_code);
+-#if defined(__SWITCH__)
++    release_lookup_cache();
++#if defined(__SWITCH__) || defined(__PROSPERO__)
+     profile_unregister_thread();
+ #endif
+     return nullptr;
+@@ -134,12 +140,31 @@
+ X86* create_main_thread() {
+     Thread* t = make_thread(recomp_image_info.image_size ? (2u << 20) : (1u << 20));
+     t_cur = t;
+-#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(__PROSPERO__)
+     profile_register_thread(recomp_image_info.entry, t->id);
+ #endif
+     return &t->cpu;
+ }
+ 
++// Gives a thread about to be created a host stack of this size.
++// PS5, an installed title: libkernel takes a stack from the title's flexible
++// memory, about 400 MB for all of them, which the game's threads exceed. The
++// stack is placed in direct memory instead: the title heap (ps5platform/heap.h,
++// malloc wrapped at link). It is not given back when the thread ends.
++void set_host_stack(pthread_attr_t* attr, size_t bytes) {
++#if defined(__PROSPERO__)
++    if (sceKernelGetDirectMemorySize() > 0) {
++        void* base = nullptr;
++        if (posix_memalign(&base, 0x4000, bytes) == 0 && base) {
++            pthread_attr_setstack(attr, base, bytes);
++            return;
++        }
++        log("set_host_stack: no direct memory for a %zu MB stack; asking libkernel", bytes >> 20);
++    }
++#endif
++    pthread_attr_setstacksize(attr, bytes);
++}
++
+ uint32_t start_thread(uint32_t entry, uint32_t param, uint32_t stack_size, bool suspended,
+                       std::function<void(uint32_t)> on_exit) {
+     Thread* t = make_thread(stack_size);
+@@ -149,7 +174,7 @@
+     t->suspend_count = suspended ? 1 : 0;
+     pthread_attr_t attr;
+     pthread_attr_init(&attr);
+-    pthread_attr_setstacksize(&attr, kHostStack);
++    set_host_stack(&attr, kHostStack);
+     if (pthread_create(&t->host, &attr, thread_main, t) != 0) fatal("pthread_create failed");
+     pthread_attr_destroy(&attr);
+     return t->id;
+diff -ruN a/runtime/src/watch.cpp b/runtime/src/watch.cpp
+--- a/runtime/src/watch.cpp	2026-11-18 14:49:46
++++ b/runtime/src/watch.cpp	2026-11-19 23:18:16
+@@ -1,7 +1,7 @@
+ // Debug write-watch: RECOMP_WATCH=<hex addr>[,<hex len>] records the last
+ // guest stores into that range (thread, value, guest return address, host
+ // backtrace) and prints them on fatal errors. Needs the DIRT3_WATCH build.
+-#if !defined(__SWITCH__) && !defined(__ANDROID__)
++#if !defined(__SWITCH__) && !defined(__ANDROID__) && !defined(__PROSPERO__)
+ #include <execinfo.h>
+ #endif
+ 
+@@ -56,7 +56,7 @@
+         const Hit& h = g_ring[i % kRing];
+         std::fprintf(stderr, "  #%llu t%u [%08X]/%u <- %08llX  (esp %08X, [esp] %08X)\n", (unsigned long long)i, h.tid,
+                      h.addr, h.size, (unsigned long long)h.value, h.esp, h.esp_ret);
+-#if !defined(__SWITCH__) && !defined(__ANDROID__)  // no execinfo on Horizon: nframes stays 0
++#if !defined(__SWITCH__) && !defined(__ANDROID__) && !defined(__PROSPERO__)  // no execinfo on Horizon: nframes stays 0
+         char** syms = backtrace_symbols(h.frames, h.nframes);
+         for (int k = 1; syms && k < h.nframes; ++k) std::fprintf(stderr, "      %s\n", syms[k]);
+         std::free(syms);
+@@ -76,7 +76,7 @@
+         h.esp = c->esp;
+         h.esp_ret = c->esp > 0x10000 ? rd32(c->esp) : 0;
+     }
+-#if !defined(__SWITCH__) && !defined(__ANDROID__)
++#if !defined(__SWITCH__) && !defined(__ANDROID__) && !defined(__PROSPERO__)
+     h.nframes = backtrace(h.frames, 8);
+ #endif
+     std::lock_guard lk(rt::g_mu);
+diff -ruN a/shims/CMakeLists.txt b/shims/CMakeLists.txt
+--- a/shims/CMakeLists.txt	2026-11-19 21:51:17
++++ b/shims/CMakeLists.txt	2026-11-19 23:18:16
+@@ -19,6 +19,7 @@
+   d3d9/bridge.cpp
+   d3d9/conformance.cpp
+   frontend/menu_patch.cpp
++  frontend/glyph_patch.cpp
+   d3d11/reflect.cpp
+   d3d11/compiler.cpp
+   audio/dsound.cpp
+diff -ruN a/shims/audio/openal.cpp b/shims/audio/openal.cpp
+--- a/shims/audio/openal.cpp	2026-11-18 14:49:46
++++ b/shims/audio/openal.cpp	2026-11-19 23:18:16
+@@ -3,6 +3,12 @@
+ // are copied into guest memory once. EAX and EFX are reported unavailable.
+ #include <AL/al.h>
+ #include <AL/alc.h>
++#if defined(__PROSPERO__)
++#define AL_ALEXT_PROTOTYPES  // the loopback device's functions
++#include <AL/alext.h>
++#include <vector>
++#include "../../platform/ps5/ps5_console.h"
++#endif
+ 
+ #include <map>
+ #include <mutex>
+@@ -75,22 +81,71 @@
+            strncasecmp(name, "ALC_EXT_BRS", 11) == 0;
+ }
+ 
++#if defined(__PROSPERO__)
++// SDL has no sound driver on the console, so the game's device is an OpenAL Soft loopback
++// device: the console's output thread (platform/ps5/ps5_console.cpp) pulls each block of
++// 48 kHz stereo from it. One device plays at a time, the one with the newest context.
++ALCdevice* g_ps5_playing = nullptr;
++
++void ps5_fill(int16_t* frames, int count, void* device) {
++    alcRenderSamplesSOFT(static_cast<ALCdevice*>(device), frames, count);
++}
++
++// The game's context attributes, with the format the console's output takes.
++std::vector<ALCint> ps5_attributes(const ALCint* game) {
++    std::vector<ALCint> out;
++    for (; game && game[0]; game += 2)
++        if (game[0] != ALC_FREQUENCY && game[0] != ALC_FORMAT_CHANNELS_SOFT && game[0] != ALC_FORMAT_TYPE_SOFT) {
++            out.push_back(game[0]);
++            out.push_back(game[1]);
++        }
++    for (const ALCint v : {ALC_FREQUENCY, 48000, ALC_FORMAT_CHANNELS_SOFT, ALC_STEREO_SOFT, ALC_FORMAT_TYPE_SOFT, ALC_SHORT_SOFT, 0})
++        out.push_back(v);
++    return out;
++}
++#endif
++
+ }  // namespace
+ 
+ // ---- ALC ----
+ CDECL(openal32, alcOpenDevice) {
++#if defined(__PROSPERO__)
++    ALCdevice* d = alcLoopbackOpenDeviceSOFT(nullptr);
++#else
+     ALCdevice* d = alcOpenDevice(nullptr);  // the default device, whatever name the game asks for
++#endif
+     rt::log("alcOpenDevice(%s) -> %p", a.str(0) ? a.str(0) : "default", static_cast<void*>(d));
+     return to_guest(d);
+ }
+ CDECL(openal32, alcCloseDevice) {
+     ALCdevice* d = from_guest<ALCdevice>(a[0]);
+     forget(a[0]);
++#if defined(__PROSPERO__)
++    rt::log("alcCloseDevice(%p)%s", static_cast<void*>(d), d && d == g_ps5_playing ? ": console output paused" : "");
++    if (d && d == g_ps5_playing) {
++        ps5::audio_stop();
++        g_ps5_playing = nullptr;
++    }
++#endif
+     return d ? alcCloseDevice(d) : ALC_FALSE;
+ }
+ CDECL(openal32, alcCreateContext) {
+     ALCdevice* d = from_guest<ALCdevice>(a[0]);
++#if defined(__PROSPERO__)
++    ALCcontext* context = nullptr;
++    if (d) {
++        const std::vector<ALCint> attributes = ps5_attributes(a[1] ? p<const ALCint>(a[1]) : nullptr);
++        context = alcCreateContext(d, attributes.data());
++        if (context && d != g_ps5_playing) {
++            ps5::audio_stop();
++            g_ps5_playing = ps5::audio_start(ps5_fill, d) ? d : nullptr;
++        }
++        rt::log("alcCreateContext(%p) -> %p, console output %s", static_cast<void*>(d), static_cast<void*>(context),
++                g_ps5_playing == d ? "running" : "not running");
++    }
++#else
+     ALCcontext* context = d ? alcCreateContext(d, p<const ALCint>(a[1])) : nullptr;
++#endif
+ #if defined(DIRT3_SWITCH_DXVK)
+     rt::log("alcCreateContext(%p) -> %p", static_cast<void*>(d), static_cast<void*>(context));
+ #endif
+diff -ruN a/shims/d3d11/bridge.cpp b/shims/d3d11/bridge.cpp
+--- a/shims/d3d11/bridge.cpp	2026-11-18 14:49:46
++++ b/shims/d3d11/bridge.cpp	2026-11-19 23:18:16
+@@ -225,7 +225,7 @@
+ OVERRIDE(ID3D11Device, CreateInputLayout, dev_create_input_layout)
+ OVERRIDE(ID3D11DeviceContext, Map, ctx_map)
+ OVERRIDE(ID3D11DeviceContext, Unmap, ctx_unmap)
+-#if defined(DIRT3_D3D11_DXVK) && (defined(__SWITCH__) || defined(__ANDROID__))
++#if defined(DIRT3_D3D11_DXVK) && (defined(__SWITCH__) || defined(__ANDROID__) || defined(__PROSPERO__))
+ OVERRIDE(ID3D11DeviceContext, CopyResource, ctx_copy_resource)
+ OVERRIDE(ID3D11DeviceContext, CopySubresourceRegion, ctx_copy_region)
+ #endif
+@@ -299,6 +299,9 @@
+ };
+ std::map<std::pair<uint32_t, uint32_t>, MapShadow> g_maps;
+ std::atomic<uint32_t> g_present_frames{0};
++std::atomic<uint32_t> g_buffers_created{0}, g_textures_created{0};  // per log period, for the fps line
++std::atomic<uint64_t> g_exposure_wait_ns{0};  // time the game spent in its exposure readback Map
++std::atomic<uint32_t> g_exposure_waits{0};
+ #if defined(DIRT3_D3D11_DXVK) && defined(__SWITCH__)
+ bool performance_trace() {
+     static const bool on = [] { const char* e = std::getenv("DIRT3_DX11_PERF"); return e && e[0] == '1'; }();
+@@ -423,7 +426,7 @@
+     }
+ }
+ 
+-#if defined(DIRT3_D3D11_DXVK) && (defined(__SWITCH__) || defined(__ANDROID__))
++#if defined(DIRT3_D3D11_DXVK) && (defined(__SWITCH__) || defined(__ANDROID__) || defined(__PROSPERO__))
+ void record_exposure_copy(uint32_t context, uint32_t proxy, ID3D11Resource* dst, ID3D11Resource* src) {
+     D3D11_TEXTURE2D_DESC desc{};
+     if (!dst || !small_float_readback(dst, 0, desc) || desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT) return;
+@@ -515,7 +518,7 @@
+         measure_map = measure_map || performance_trace();
+ #endif
+         const auto map_start = measure_map ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+-#if defined(DIRT3_D3D11_DXVK) && (defined(__SWITCH__) || defined(__ANDROID__))
++#if defined(DIRT3_D3D11_DXVK) && (defined(__SWITCH__) || defined(__ANDROID__) || defined(__PROSPERO__))
+         static const bool fresh_exposure = [] { const char* e = std::getenv("DIRT3_DX11_FRESH_EXPOSURE"); return e && e[0] == '1'; }();
+         // Opt-in DiRT3 compatibility experiment, not a change to general D3D11
+         // mapping semantics: consume the latest queued exposure pixel, not an
+@@ -566,6 +569,10 @@
+             hr = self->Map(actual, sub, D3D11_MAP(type), a[4], &m);
+         }
+         const double map_ms = measure_map ? std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - map_start).count() : 0;
++        if (exposure_read) {
++            g_exposure_wait_ns.fetch_add(uint64_t(map_ms * 1e6), std::memory_order_relaxed);
++            g_exposure_waits.fetch_add(1, std::memory_order_relaxed);
++        }
+ #if defined(DIRT3_D3D11_DXVK) && defined(__SWITCH__)
+         if (performance_trace()) {
+             g_map_calls.fetch_add(1, std::memory_order_relaxed);
+@@ -729,6 +736,7 @@
+     const auto* desc = a.ptr<D3D11_BUFFER_DESC>(1);
+     auto init = init_data(a[2], 1);
+     ID3D11Buffer* b = nullptr;
++    g_buffers_created.fetch_add(1, std::memory_order_relaxed);
+     const HRESULT hr = self && desc ? self->CreateBuffer(desc, init.empty() ? nullptr : init.data(), a[3] ? &b : nullptr)
+                                     : E_INVALIDARG;
+     if (FAILED(hr)) rt::log("d3d11: CreateBuffer(%u bytes, bind %X) failed: %08X", desc ? desc->ByteWidth : 0,
+@@ -777,6 +785,7 @@
+         c, d ? mip_count(d->MipLevels, d->Width) * d->ArraySize : 0);
+ }
+ void dev_create_texture2d(X86* c) {
++    g_textures_created.fetch_add(1, std::memory_order_relaxed);
+     const auto* d = Args{c}.ptr<D3D11_TEXTURE2D_DESC>(1);
+     create_texture<D3D11_TEXTURE2D_DESC, ID3D11Texture2D, &ID3D11Device::CreateTexture2D>(
+         c, d ? mip_count(d->MipLevels, d->Width, d->Height) * d->ArraySize : 0);
+@@ -1034,9 +1043,31 @@
+     if (n == 0 || (FAILED(hr) && n < 32))
+         rt::log("d3d11: Present(sync %u, flags %X) -> %08X", a[1], a[2], uint32_t(hr));
+     static auto t0 = std::chrono::steady_clock::now();
++#if defined(__PROSPERO__)
++    rt::profile_frame();
++#endif
++    // The slowest frame and the frames over 25 ms in each 300: what stutter looks like.
++    static auto last = t0;
++    static double worst_ms = 0;
++    static unsigned slow = 0;
++    static uint64_t last_slow = 0;
++    {
++        const auto now = std::chrono::steady_clock::now();
++        const double ms = std::chrono::duration<double, std::milli>(now - last).count();
++        last = now;
++        worst_ms = std::max(worst_ms, ms);
++        if (ms > 25.0) ++slow;
++    }
+     if (++n % 300 == 0) {
+         const auto t = std::chrono::steady_clock::now();
+-        rt::log("d3d11: %u presents, %.1f fps", n, 300.0 / std::chrono::duration<double>(t - t0).count());
++        const uint32_t waits = g_exposure_waits.exchange(0);
++        const double wait_ms = g_exposure_wait_ns.exchange(0) / 1e6;
++        rt::log("d3d11: %u presents, %.1f fps, slowest frame %.0f ms, %u over 25 ms; exposure readback %u x %.1f ms; %llu slow lookups, %u buffers, %u textures created", n,
++                300.0 / std::chrono::duration<double>(t - t0).count(), worst_ms, slow, waits, waits ? wait_ms / waits : 0.0,
++                (unsigned long long)(rt::slow_lookup_count() - last_slow), g_buffers_created.exchange(0), g_textures_created.exchange(0));
++        last_slow = rt::slow_lookup_count();
++        worst_ms = 0;
++        slow = 0;
+         t0 = t;
+     }
+     c->eax = uint32_t(hr);
+@@ -1253,6 +1284,9 @@
+ 
+ // D3D11CreateDeviceAndSwapChain(adapter, driver, software, flags, levels, nlevels,
+ //                               sdk, swapdesc, **swapchain, **device, *level, **context)
++#if defined(__PROSPERO__)
++extern "C" void dirt3_ps5_set_output(uint32_t width, uint32_t height);
++#endif
+ STDCALL(d3d11, D3D11CreateDeviceAndSwapChain, 12) {
+     IDXGIAdapter* adapter = static_cast<IDXGIAdapter*>(to_host(a[0]));
+     const auto* levels = a.ptr<const D3D_FEATURE_LEVEL>(4);
+@@ -1260,6 +1294,9 @@
+     SwapInfo info;
+     const bool swap = a[7] && a[8];
+     if (swap && !prepare_swap_chain(a[7], d, info)) return uint32_t(E_INVALIDARG);
++#if defined(__PROSPERO__)
++    if (swap) dirt3_ps5_set_output(d.BufferDesc.Width, d.BufferDesc.Height);
++#endif
+     IDXGISwapChain* sc = nullptr;
+     ID3D11Device* dev = nullptr;
+     ID3D11DeviceContext* ctx = nullptr;
+diff -ruN a/shims/frontend/menu_patch.cpp b/shims/frontend/menu_patch.cpp
+--- a/shims/frontend/menu_patch.cpp	2026-11-19 22:56:31
++++ b/shims/frontend/menu_patch.cpp	2026-11-19 23:18:16
+@@ -42,7 +42,8 @@
+ 
+ constexpr uint32_t kTag = 0x72522200;
+ // The row's title id; the game's localisation lookup (hooked below) answers it.
+-constexpr const char* kMetalFxTitle = "lng_metalfx_combo_title";
++const char* kMetalFxTitle = "lng_metalfx_combo_title";  // another id on the console (install_menu_patches)
++bool g_row_default_on = true;                           // the row's first-run and repair value
+ constexpr const char* kMetalFxText = "METALFX";  // the menu's titles are capitals
+ uint32_t g_metalfx_text = 0;  // guest copy of kMetalFxText once the row is installed
+ 
+@@ -240,12 +241,12 @@
+     return true;
+ }
+ 
+-// First-run defaults: MetalFX on.
++// First-run defaults: the row's default value (MetalFX on).
+ bool patch_defaults(const std::string& in, const std::string& out) {
+     std::string x = read_file(in);
+     size_t at, len;
+     if (!find_aspect(x, at, len)) return false;
+-    x.replace(at, len, "metalfx");
++    x.replace(at, len, g_row_default_on ? "metalfx" : "normal");
+     return write_file(out, x);
+ }
+ 
+@@ -282,9 +283,11 @@
+     rt::log("menu: resolution cap raised to 7680");
+ }
+ 
+-void install_menu_patches(bool metalfx_row) {
++void install_menu_patches(bool metalfx_row, bool default_on, const char* title_id) {
+     patch_grid_max_width();
+     if (!metalfx_row) return;  // the row stays hidden, as the game ships it
++    g_row_default_on = default_on;
++    if (title_id) kMetalFxTitle = title_id;
+     const std::string dir = vfs::data_dir() + "/overlay";
+     std::error_code ec;
+     std::filesystem::create_directories(dir, ec);
+diff -ruN a/shims/input/xinput.cpp b/shims/input/xinput.cpp
+--- a/shims/input/xinput.cpp	2026-11-19 09:46:23
++++ b/shims/input/xinput.cpp	2026-11-19 23:18:16
+@@ -3,6 +3,9 @@
+ // connected, which is what development on a Mac without a controller needs.
+ #include <SDL3/SDL.h>
+ #include "../../platform/sdl/virtual_controller.h"
++#if defined(__PROSPERO__)
++#include "../../platform/ps5/ps5_console.h"
++#endif
+ 
+ #include <algorithm>
+ #include <atomic>
+@@ -137,6 +140,38 @@
+     return s;
+ }
+ 
++#if defined(__PROSPERO__)
++// Player 1 is the console's controller (SDL has no pad driver there): Cross/Circle/Square/
++// Triangle sit where A/B/X/Y do, Options is Start, the touch pad button is Back.
++bool read_ps5_pad(PadState& s) {
++    ps5::Pad p;
++    if (!ps5::pad_read(p)) return false;
++    if (ps5::keyboard_feed(p)) return true;  // the name entry has the pad: the game sees one at rest
++    static const struct { uint32_t b; uint16_t x; } map[] = {
++        {ps5::PAD_UP, XI_DPAD_UP}, {ps5::PAD_DOWN, XI_DPAD_DOWN}, {ps5::PAD_LEFT, XI_DPAD_LEFT},
++        {ps5::PAD_RIGHT, XI_DPAD_RIGHT}, {ps5::PAD_OPTIONS, XI_START}, {ps5::PAD_TOUCH_PAD, XI_BACK},
++        {ps5::PAD_L3, XI_LTHUMB}, {ps5::PAD_R3, XI_RTHUMB}, {ps5::PAD_L1, XI_LSHOULDER}, {ps5::PAD_R1, XI_RSHOULDER},
++        {ps5::PAD_CROSS, XI_A}, {ps5::PAD_CIRCLE, XI_B}, {ps5::PAD_SQUARE, XI_X}, {ps5::PAD_TRIANGLE, XI_Y},
++    };
++    for (auto& m : map)
++        if (p.buttons & m.b) s.buttons |= m.x;
++    // 0..255 around 128 to XInput's range, with the dead zone a worn stick needs.
++    const auto stick = [](uint8_t v, bool invert) {
++        int d = int(v) - 128;
++        if (d > -16 && d < 16) return int16_t(0);
++        d = std::clamp(d * 258, -32767, 32767);
++        return int16_t(invert ? -d : d);
++    };
++    s.lx = stick(p.lx, false);
++    s.ly = stick(p.ly, true);  // XInput: up is positive
++    s.rx = stick(p.rx, false);
++    s.ry = stick(p.ry, true);
++    s.lt = p.l2;
++    s.rt = p.r2;
++    return true;
++}
++#endif
++
+ // DIRT3_INPUT_SCRIPT drives player 1 from a timeline, for reproducible test
+ // runs (menus to a race) on every platform:
+ //   "<seconds> <input>[+<input>...] [hold seconds, default 0.15]; ..."
+@@ -215,6 +250,9 @@
+     if (g_pads[idx]) s = read_pad(g_pads[idx]);
+     else if (idx == 0) {
+         s = read_keyboard();
++#if defined(__PROSPERO__)
++        read_ps5_pad(s);
++#endif
+ #ifdef DIRT3_TOUCH_CONTROLLER
+         const auto t = platform::touch::state();
+         s.buttons |= t.buttons;
+@@ -280,6 +318,9 @@
+     const uint32_t idx = a[0];
+     if (idx > 3) return ERROR_DEVICE_NOT_CONNECTED;
+     std::lock_guard lk(g_mu);
++#if defined(__PROSPERO__)
++    if (idx == 0 && a[1]) ps5::pad_rumble(uint8_t(rd16(a[1]) >> 8), uint8_t(rd16(a[1] + 2) >> 8));
++#endif
+     if (!g_pads[idx]) return idx == 0 ? 0 : ERROR_DEVICE_NOT_CONNECTED;
+ #ifdef __SWITCH__
+     if (idx == g_dump_pad && SDL_GetTicks() < g_dump_feedback_until) return 0;
+diff -ruN a/shims/kernel32/process.cpp b/shims/kernel32/process.cpp
+--- a/shims/kernel32/process.cpp	2026-11-19 21:53:31
++++ b/shims/kernel32/process.cpp	2026-11-19 23:18:16
+@@ -12,6 +12,9 @@
+ 
+ #include "../shim.h"
+ #include "../../platform/platform.h"
++#if defined(__PROSPERO__)
++#include "../../platform/ps5/ps5_console.h"
++#endif
+ #include "../vfs.h"
+ 
+ using namespace shim;
+@@ -190,6 +193,8 @@
+     std::fflush(nullptr);
+ #if defined(__SWITCH__)
+     platform::exit_process(a[0]);
++#elif defined(__PROSPERO__)
++    ps5::quit(int(a[0]));
+ #else
+     std::_Exit(int(a[0]));
+ #endif
+@@ -210,6 +215,8 @@
+     std::fflush(nullptr);
+ #if defined(__SWITCH__)
+     platform::exit_process(a[1]);
++#elif defined(__PROSPERO__)
++    ps5::quit(int(a[1]));
+ #else
+     std::_Exit(int(a[1]));
+ #endif
+@@ -352,16 +359,46 @@
+ STDCALL(kernel32, UnhandledExceptionFilter, 1) { return 1; }  // EXCEPTION_EXECUTE_HANDLER
+ 
+ // ---- time ----
+-STDCALL(kernel32, GetTickCount, 0) {
+-    return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
++// The game asks for the time constantly. On the console clock_gettime is a system call
++// (about 880 ns), so the time comes from the processor's cycle counter there, scaled once
++// against the system clock at the first call.
++#if defined(__PROSPERO__)
++namespace {
++struct TscClock {
++    uint64_t tsc0;
++    int64_t ns0;
++    double ns_per_tick;
++};
++int64_t system_ns() {
++    timespec t;
++    clock_gettime(CLOCK_MONOTONIC, &t);
++    return int64_t(t.tv_sec) * 1000000000 + t.tv_nsec;
+ }
++TscClock calibrate() {
++    const int64_t n0 = system_ns();
++    const uint64_t t0 = __builtin_ia32_rdtsc();
++    usleep(50000);
++    const int64_t n1 = system_ns();
++    const uint64_t t1 = __builtin_ia32_rdtsc();
++    return {t0, n0, double(n1 - n0) / double(t1 - t0)};
++}
++}  // namespace
++int64_t guest_clock_ns() {
++    static const TscClock c = calibrate();
++    return c.ns0 + int64_t(double(__builtin_ia32_rdtsc() - c.tsc0) * c.ns_per_tick);
++}
++#else
++int64_t guest_clock_ns() {
++    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
++}
++#endif
++STDCALL(kernel32, GetTickCount, 0) { return uint32_t(guest_clock_ns() / 1000000); }
+ STDCALL(kernel32, QueryPerformanceFrequency, 1) {
+     wr64(a[0], 10000000);
+     return 1;
+ }
+ STDCALL(kernel32, QueryPerformanceCounter, 1) {
+-    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+-    wr64(a[0], uint64_t(ns / 100));
++    wr64(a[0], uint64_t(guest_clock_ns() / 100));
+     return 1;
+ }
+ STDCALL(kernel32, GetSystemTimeAsFileTime, 1) {
+diff -ruN a/shims/kernel32/sync.cpp b/shims/kernel32/sync.cpp
+--- a/shims/kernel32/sync.cpp	2026-11-19 22:40:08
++++ b/shims/kernel32/sync.cpp	2026-11-19 23:18:16
+@@ -10,6 +10,7 @@
+ #include <algorithm>
+ #include <atomic>
+ #include <chrono>
++#include <deque>
+ #include <cstdlib>
+ #include <condition_variable>
+ #include <mutex>
+@@ -158,8 +159,8 @@
+ // Lookup is lock-free (fixed table of atomic pointers); only creation and
+ // deletion lock. DeleteCriticalSection recycles the slot (the DX11 renderer
+ // creates and deletes them continually while streaming: never recycling ran
+-// the table out mid-race). Host mutexes are never freed, so a lookup racing
+-// a delete never touches freed memory. Recycle the table index, not the mutex:
++// the table out mid-race). Host mutexes are freed only ten seconds after their slot drops them (cs_retire), so a
++// lookup racing a delete never touches freed memory. Recycle the table index, not the mutex:
+ // a retiring lock can still have native ownership after its guest storage has
+ // been reinitialised. Giving that mutex to a new lock inherits the old owner
+ // and can block rendering forever. Old mutex generations remain alive for any
+@@ -175,12 +176,38 @@
+ std::vector<uint32_t> g_cs_free;     // recycled slots (1-based)
+ std::atomic<uint32_t> g_cs_inits{0}, g_cs_deletes{0};
+ 
++// A mutex that its slot has dropped. It is freed ten seconds later if nobody holds it, which
++// is long past any thread that had only just looked it up: the console runs out of mutexes
++// (pthread_mutex_init fails with ENOMEM) after some 22000 frames of never freeing them.
++struct Retired {
++    HostCS* cs;
++    std::chrono::steady_clock::time_point at;
++};
++std::deque<Retired> g_cs_retired;  // oldest first (g_cs_mu held)
++
++void cs_retire(HostCS* cs) {
++    if (!cs) return;
++    const auto now = std::chrono::steady_clock::now();
++    g_cs_retired.push_back({cs, now});
++    for (size_t n = g_cs_retired.size(); n-- && now - g_cs_retired.front().at > std::chrono::seconds(10);) {
++        Retired r = g_cs_retired.front();
++        g_cs_retired.pop_front();
++        if (r.cs->m.try_lock()) {
++            r.cs->m.unlock();
++            delete r.cs;
++        } else {
++            r.at = now;  // still held: look again later
++            g_cs_retired.push_back(r);
++        }
++    }
++}
++
+ // A new slot for the critical section at p (g_cs_mu held).
+ uint32_t cs_new_slot(uint32_t p) {
+     uint32_t slot;
+     if (!g_cs_free.empty()) {
+         slot = g_cs_free.back();
+-        g_cs[slot - 1].store(new HostCS, std::memory_order_release);
++        cs_retire(g_cs[slot - 1].exchange(new HostCS, std::memory_order_acq_rel));
+         g_cs_free.pop_back();
+     } else {
+         const uint32_t n = g_cs_count.load();
+@@ -218,7 +245,7 @@
+     if (old && old <= g_cs_count.load() && g_cs_owner[old - 1] == p) {
+         // Reinitialisation resets guest ownership, so reset native ownership
+         // too. Keeping the table index must not keep its previous mutex state.
+-        g_cs[old - 1].store(new HostCS, std::memory_order_release);
++        cs_retire(g_cs[old - 1].exchange(new HostCS, std::memory_order_acq_rel));
+         __atomic_store_n(reinterpret_cast<uint32_t*>(rt::host_ptr(p + 16)), old, __ATOMIC_RELEASE);
+     } else
+         cs_new_slot(p);
+diff -ruN a/shims/misc/misc.cpp b/shims/misc/misc.cpp
+--- a/shims/misc/misc.cpp	2026-11-19 22:44:27
++++ b/shims/misc/misc.cpp	2026-11-19 23:18:16
+@@ -246,9 +246,8 @@
+ STDCALL(crypt32, CertFreeCertificateContext, 1) { return 1; }
+ 
+ // ---- winmm ----
+-STDCALL(winmm, timeGetTime, 0) {
+-    return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+-}
++int64_t guest_clock_ns();  // shims/kernel32/process.cpp
++STDCALL(winmm, timeGetTime, 0) { return uint32_t(guest_clock_ns() / 1000000); }
+ 
+ // ---- psapi: the process list contains only the game itself ----
+ STDCALL(psapi, EnumProcesses, 3) {  // (pids, cb, *needed)
+diff -ruN a/shims/user32/user32.cpp b/shims/user32/user32.cpp
+--- a/shims/user32/user32.cpp	2026-11-19 21:51:17
++++ b/shims/user32/user32.cpp	2026-11-19 23:18:16
+@@ -299,6 +299,7 @@
+     return 1;
+ }
+ STDCALL(user32, AdjustWindowRect, 3) { return 1; }  // borderless: client == window
++STDCALL(user32, AdjustWindowRectEx, 4) { return 1; }  // same as AdjustWindowRect: no frame to add
+ STDCALL(user32, GetClientRect, 2) {
+     std::lock_guard lk(g_mu);
+     auto it = g_windows.find(a[0]);
+@@ -348,6 +349,8 @@
+     g_focus = a[0];
+     return prev;
+ }
++// Window activation: the host window already has focus, so these report success and do nothing.
++STDCALL(user32, SetActiveWindow, 1) { return a[0]; }
+ STDCALL(user32, ShowCursor, 1) { return uint32_t(a[0] ? ++g_cursor_count : --g_cursor_count); }
+ STDCALL(user32, ClipCursor, 1) { return 1; }
+ STDCALL(user32, ReleaseCapture, 0) { return 1; }
+diff -ruN a/tools/recomp/config/hooks.txt b/tools/recomp/config/hooks.txt
+--- a/tools/recomp/config/hooks.txt	2026-11-18 14:11:02
++++ b/tools/recomp/config/hooks.txt	2026-11-19 23:18:16
+@@ -1,6 +1,6 @@
+ # Lifted functions the host replaces (recomp lift --hooks). One hex address per
+ # line; the lifted body becomes f_<addr>_orig and the host defines f_<addr>.
++# Disabled for the local dirt3_game.exe (SHA-256 0e1e3a51...): neither address is a
++# function start in that binary, and no generated call site targets them.
+ # 01161960  localisation lookup (table, id) -> text, or 0: shims/frontend/menu_patch.cpp
+-01161960
+ # 00CD70D0  envmap list walk, run over a copy of the list: shims/misc/envmap_list.cpp
+-00CD70D0
+diff -ruN a/tools/scripts/merge_pipelines.py b/tools/scripts/merge_pipelines.py
+--- a/tools/scripts/merge_pipelines.py	2026-11-18 14:49:46
++++ b/tools/scripts/merge_pipelines.py	2026-11-19 23:18:16
+@@ -65,8 +65,10 @@
+     data = open(path, "rb").read()
+     (n,) = struct.unpack_from("<H", data, 4)
+     off, keys = 6 + n, set()
+-    while off < len(data):
++    while off + 2 <= len(data):
+         (n,) = struct.unpack_from("<H", data, off)
++        if off + 2 + n + options_size + 8 + 4 + 24 > len(data):
++            break  # an entry cut short when the title was ended: the cache is kept up to here
+         name = data[off + 2:off + 2 + n]
+         off += 2 + n
+         info = data[off:off + options_size + 8]
+diff -ruN a/tools/scripts/package_macos.sh b/tools/scripts/package_macos.sh
+--- a/tools/scripts/package_macos.sh	2026-11-18 14:49:46
++++ b/tools/scripts/package_macos.sh	2026-11-19 23:18:16
+@@ -43,9 +43,13 @@
+ if [ -d "$ROOT/build/pipelines/dxmt" ]; then cp -R "$ROOT/build/pipelines/dxmt" "$APP/Contents/Resources/"; fi
+ 
+ ICON_KEY=
+-if [ -f "$GAME/dirt3.ico" ]; then
++ICON_SRC=
++for f in "$GAME/dirt3.ico" "$GAME/icon.ico"; do
++    [ -f "$f" ] && { ICON_SRC=$f; break; }
++done
++if [ -n "$ICON_SRC" ]; then
+     WORK=$(mktemp -d)
+-    if sips -s format png "$GAME/dirt3.ico" --out "$WORK/icon.png" >/dev/null 2>&1; then
++    if sips -s format png "$ICON_SRC" --out "$WORK/icon.png" >/dev/null 2>&1; then
+         mkdir -p "$WORK/dirt3.iconset"
+         for sz in 16 32 128 256 512; do
+             sips -z $sz $sz "$WORK/icon.png" --out "$WORK/dirt3.iconset/icon_${sz}x${sz}.png" >/dev/null

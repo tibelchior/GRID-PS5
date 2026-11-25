@@ -1,0 +1,322 @@
+diff -urN a/src/dxvk/hud/dxvk_hud.cpp b/src/dxvk/hud/dxvk_hud.cpp
+--- a/src/dxvk/hud/dxvk_hud.cpp
++++ b/src/dxvk/hud/dxvk_hud.cpp
+@@ -27,7 +27,7 @@
+     addItem<HudCsThreadItem>("cs", -1, device);
+     addItem<HudGpuLoadItem>("gpuload", -1, device);
+     addItem<HudCompilerActivityItem>("compiler", -1, device);
+-    addItem<HudKeyboardItem>("dirt3keyboard", -1);
++    addItem<HudKeyboardItem>("dirt3keyboard", -1, device);
+   }
+ 
+ 
+diff -urN a/src/dxvk/hud/dxvk_hud_item.cpp b/src/dxvk/hud/dxvk_hud_item.cpp
+--- a/src/dxvk/hud/dxvk_hud_item.cpp
++++ b/src/dxvk/hud/dxvk_hud_item.cpp
+@@ -14,9 +14,12 @@
+ #include <version.h>
+ 
+ // The title's keyboard and statistics switches (platform/ps5/ps5_platform.cpp)
+-extern "C" int dirt3_ps5_keyboard_text(char* out, int capacity);
++extern "C" int dirt3_ps5_keyboard_state(char* out, int capacity, int* row, int* col);
+ extern "C" bool dirt3_ps5_hud_enabled();
+ 
++#include <hud_rect_frag.h>
++#include <hud_rect_vert.h>
++
+ namespace dxvk::hud {
+ 
+   HudItem::~HudItem() {
+@@ -98,23 +101,108 @@
+   }
+ 
+ 
++  HudKeyboardItem::HudKeyboardItem(const Rc<DxvkDevice>& device)
++  : m_device(device) {
++    m_layout = m_device->createBuiltInPipelineLayout(DxvkPipelineLayoutFlags(),
++      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
++      sizeof(RectArgs), 0u, nullptr);
++  }
++
++
++  HudKeyboardItem::~HudKeyboardItem() {
++    auto vk = m_device->vkd();
++
++    for (const auto& p : m_pipelines)
++      vk->vkDestroyPipeline(vk->device(), p.second, nullptr);
++  }
++
++
++  VkPipeline HudKeyboardItem::getPipeline(const HudPipelineKey& key) {
++    auto entry = m_pipelines.find(key);
++
++    if (entry != m_pipelines.end())
++      return entry->second;
++
++    VkPipelineInputAssemblyStateCreateInfo iaState = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
++    iaState.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
++
++    VkPipelineColorBlendAttachmentState cbAttachment = { };
++    cbAttachment.blendEnable = VK_TRUE;
++    cbAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
++    cbAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
++    cbAttachment.colorBlendOp = VK_BLEND_OP_ADD;
++    cbAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
++    cbAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
++    cbAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
++    cbAttachment.colorWriteMask =
++      VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
++      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
++
++    util::DxvkBuiltInGraphicsState state = { };
++    state.vs = util::DxvkBuiltInShaderStage(hud_rect_vert, nullptr);
++    state.fs = util::DxvkBuiltInShaderStage(hud_rect_frag, nullptr);
++    state.colorFormats[0] = key.format;
++    state.iaState = &iaState;
++    state.cbAttachment = &cbAttachment;
++
++    VkPipeline pipeline = m_device->createBuiltInGraphicsPipeline(m_layout, state);
++    m_pipelines.insert({ key, pipeline });
++    return pipeline;
++  }
++
++
++  void HudKeyboardItem::drawRect(
++    const Rc<DxvkCommandList>&ctx,
++    const HudPipelineKey&     key,
++          VkExtent2D          surface,
++          float x, float y, float w, float h,
++          float r, float g, float b, float a) {
++    // The colours are as they should look; an sRGB target encodes them itself
++    if (lookupFormatInfo(key.format)->flags.test(DxvkFormatFlag::ColorSpaceSrgb)) {
++      r = std::pow(r, 2.2f);
++      g = std::pow(g, 2.2f);
++      b = std::pow(b, 2.2f);
++    }
++
++    RectArgs args = { };
++    args.rect[0] = x;
++    args.rect[1] = y;
++    args.rect[2] = w;
++    args.rect[3] = h;
++    args.surface[0] = float(surface.width);
++    args.surface[1] = float(surface.height);
++    args.color[0] = r;
++    args.color[1] = g;
++    args.color[2] = b;
++    args.color[3] = a;
++
++    ctx->cmdBindPipeline(DxvkCmdBuffer::ExecBuffer,
++      VK_PIPELINE_BIND_POINT_GRAPHICS, getPipeline(key));
++
++    ctx->bindResources(DxvkCmdBuffer::ExecBuffer,
++      m_layout, 0u, nullptr, sizeof(args), &args);
++
++    ctx->cmdDraw(4, 1, 0, 0);
++  }
++
++
+   HudPos HudKeyboardItem::render(
+     const Rc<DxvkCommandList>&ctx,
+     const HudPipelineKey&     key,
+     const HudOptions&         options,
+           HudRenderer&        renderer,
+           HudPos              position) {
+-    char buffer[1024];
+-    int length = dirt3_ps5_keyboard_text(buffer, sizeof(buffer));
++    char buffer[256];
++    int row = 0, col = 0;
++    int length = dirt3_ps5_keyboard_state(buffer, sizeof(buffer), &row, &col);
+ 
+     if (length <= 0)
+       return position;
+ 
+-    // One line per row, at a fixed place: the first line is the title
++    // The name, then the four rows of keys, one per line
++    std::vector<std::string> lines;
+     std::string text(buffer, size_t(length));
+-    HudPos at = { 640, 360 };
+     size_t start = 0;
+-    bool first = true;
+ 
+     while (start <= text.size()) {
+       size_t end = text.find('\n', start);
+@@ -122,12 +210,78 @@
+       if (end == std::string::npos)
+         end = text.size();
+ 
+-      renderer.drawText(first ? 32 : 28, at, first ? 0xffffe060u : 0xffffffffu, text.substr(start, end - start));
+-      at.y += first ? 44 : 38;
+-      first = false;
++      lines.push_back(text.substr(start, end - start));
+       start = end + 1;
+     }
+ 
++    while (lines.size() < 5)
++      lines.push_back(std::string());
++
++    const VkExtent2D surface = renderer.getPushConstants().surfaceSize;
++    const float s = float(surface.height) / 1440.0f;
++    const float keyW = 96.0f * s, keyH = 96.0f * s, gap = 10.0f * s, pad = 30.0f * s;
++    const float innerW = 10.0f * keyW + 9.0f * gap;
++    const float panelW = innerW + 2.0f * pad;
++    const float titleH = 46.0f * s, nameH = 84.0f * s, cmdH = 76.0f * s, hintH = 76.0f * s;
++    const float panelH = pad + titleH + nameH + gap + 4.0f * (keyH + gap) + cmdH + gap + hintH + pad;
++    const float px = (float(surface.width) - panelW) / 2.0f;
++    const float py = (float(surface.height) - panelH) / 2.0f;
++
++    auto centred = [&](uint32_t size, float x, float y, float w, uint32_t color, const std::string& label) {
++      // The font is monospaced, 0.75 em an advance (24 for its 32); y is the text's baseline
++      float width = 0.75f * float(size) * float(label.size());
++      renderer.drawText(size, { int32_t(x + (w - width) / 2.0f), int32_t(y) }, color, label);
++    };
++
++    drawRect(ctx, key, surface, 0.0f, 0.0f, float(surface.width), float(surface.height), 0.0f, 0.0f, 0.0f, 0.45f);
++    drawRect(ctx, key, surface, px, py, panelW, panelH, 0.07f, 0.08f, 0.11f, 0.90f);
++
++    float y = py + pad;
++    renderer.drawText(uint32_t(34.0f * s), { int32_t(px + pad), int32_t(y + 36.0f * s) }, 0xff60e0ffu, "ENTER A NAME");
++    y += titleH;
++
++    drawRect(ctx, key, surface, px + pad, y, innerW, nameH, 0.16f, 0.17f, 0.22f, 0.95f);
++    renderer.drawText(uint32_t(54.0f * s), { int32_t(px + pad + 20.0f * s), int32_t(y + 62.0f * s) }, 0xffffffffu, lines[0] + "_");
++    y += nameH + gap;
++
++    for (int r = 0; r < 4; r++) {
++      for (int c = 0; c < 10; c++) {
++        const float x = px + pad + float(c) * (keyW + gap);
++        const bool selected = r == row && c == col;
++
++        if (selected)
++          drawRect(ctx, key, surface, x, y, keyW, keyH, 0.96f, 0.78f, 0.20f, 1.0f);
++        else
++          drawRect(ctx, key, surface, x, y, keyW, keyH, 0.23f, 0.25f, 0.32f, 0.95f);
++
++        if (size_t(c) < lines[1 + r].size())
++          centred(uint32_t(52.0f * s), x, y + 68.0f * s, keyW, selected ? 0xff101010u : 0xffffffffu, std::string(1, lines[1 + r][c]));
++      }
++
++      y += keyH + gap;
++    }
++
++    static const char* commands[5] = { "SHIFT", "SPACE", "DELETE", "OK", "CANCEL" };
++    const float cmdW = (innerW - 4.0f * gap) / 5.0f;
++
++    for (int c = 0; c < 5; c++) {
++      const float x = px + pad + float(c) * (cmdW + gap);
++      const bool selected = row == 4 && c == col;
++
++      if (selected)
++        drawRect(ctx, key, surface, x, y, cmdW, cmdH, 0.96f, 0.78f, 0.20f, 1.0f);
++      else
++        drawRect(ctx, key, surface, x, y, cmdW, cmdH, 0.18f, 0.20f, 0.26f, 0.95f);
++
++      centred(uint32_t(32.0f * s), x, y + 50.0f * s, cmdW, selected ? 0xff101010u : 0xffffffffu, commands[c]);
++    }
++
++    y += cmdH + gap;
++    renderer.drawText(uint32_t(22.0f * s), { int32_t(px + pad), int32_t(y + 26.0f * s) }, 0xffc8c8c8u,
++      "X type   Triangle space   Square delete");
++    renderer.drawText(uint32_t(22.0f * s), { int32_t(px + pad), int32_t(y + 56.0f * s) }, 0xffc8c8c8u,
++      "L2 capitals   R2 OK   Circle cancel");
++
+     return position;
+   }
+ 
+diff -urN a/src/dxvk/hud/dxvk_hud_item.h b/src/dxvk/hud/dxvk_hud_item.h
+--- a/src/dxvk/hud/dxvk_hud_item.h
++++ b/src/dxvk/hud/dxvk_hud_item.h
+@@ -199,6 +199,10 @@
+ 
+   public:
+ 
++    HudKeyboardItem(const Rc<DxvkDevice>& device);
++
++    ~HudKeyboardItem();
++
+     bool isKeyboard() const { return true; }
+ 
+     HudPos render(
+@@ -208,6 +212,30 @@
+             HudRenderer&        renderer,
+             HudPos              position);
+ 
++  private:
++
++    struct RectArgs {
++      float rect[4];
++      float surface[2];
++      float padding[2];
++      float color[4];
++    };
++
++    Rc<DxvkDevice>            m_device;
++    const DxvkPipelineLayout* m_layout = nullptr;
++
++    std::unordered_map<HudPipelineKey,
++      VkPipeline, DxvkHash, DxvkEq> m_pipelines;
++
++    VkPipeline getPipeline(const HudPipelineKey& key);
++
++    void drawRect(
++      const Rc<DxvkCommandList>&ctx,
++      const HudPipelineKey&     key,
++            VkExtent2D          surface,
++            float x, float y, float w, float h,
++            float r, float g, float b, float a);
++
+   };
+ 
+ 
+diff -urN a/src/dxvk/hud/shaders/hud_rect_frag.frag b/src/dxvk/hud/shaders/hud_rect_frag.frag
+--- a/src/dxvk/hud/shaders/hud_rect_frag.frag
++++ b/src/dxvk/hud/shaders/hud_rect_frag.frag
+@@ -0,0 +1,15 @@
++#version 450
++
++layout(push_constant)
++uniform rect_info_t {
++  vec4 rect;
++  vec2 surface;
++  vec2 padding;
++  vec4 color;
++};
++
++layout(location = 0) out vec4 o_color;
++
++void main() {
++  o_color = vec4(color.rgb * color.a, color.a);
++}
+diff -urN a/src/dxvk/hud/shaders/hud_rect_vert.vert b/src/dxvk/hud/shaders/hud_rect_vert.vert
+--- a/src/dxvk/hud/shaders/hud_rect_vert.vert
++++ b/src/dxvk/hud/shaders/hud_rect_vert.vert
+@@ -0,0 +1,16 @@
++#version 450
++
++// A filled rectangle (the on-screen keyboard's panel and keys): a triangle strip of four corners.
++layout(push_constant)
++uniform rect_info_t {
++  vec4 rect;      // x, y, width, height in pixels
++  vec2 surface;   // the target's size in pixels
++  vec2 padding;
++  vec4 color;     // red, green, blue, alpha
++};
++
++void main() {
++  vec2 corner = vec2(float(gl_VertexIndex & 1), float((gl_VertexIndex >> 1) & 1));
++  vec2 position = rect.xy + corner * rect.zw;
++  gl_Position = vec4(position / surface * 2.0f - 1.0f, 0.0f, 1.0f);
++}
+diff -urN a/src/dxvk/meson.build b/src/dxvk/meson.build
+--- a/src/dxvk/meson.build
++++ b/src/dxvk/meson.build
+@@ -19,6 +19,9 @@
+ 
+   'hud/shaders/hud_frame_time_eval.comp',
+ 
++  'hud/shaders/hud_rect_frag.frag',
++  'hud/shaders/hud_rect_vert.vert',
++
+   'hud/shaders/hud_graph_frag.frag',
+   'hud/shaders/hud_graph_vert.vert',
+ 

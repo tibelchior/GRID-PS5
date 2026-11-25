@@ -1,0 +1,16 @@
+# Your game files, build output and personal art stay out of the repository.
+/gamedata/*
+!/gamedata/README.md
+/dist/
+# The unpacked game executable and scratch notes made while unpacking.
+/work/
+/GRID_unpacked.exe
+/*.png
+/*.jpeg
+/*.jpg
+/art/*.png
+/art/*.jpg
+# The recorded shader cache is built from the game's own shaders: share it as a separate,
+# clearly labelled download, not in the repository (see cache/README.md).
+/cache/grid.*
+.DS_Store

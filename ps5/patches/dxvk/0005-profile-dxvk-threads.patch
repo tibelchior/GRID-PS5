@@ -1,0 +1,24 @@
+--- a/src/util/util_env.cpp
++++ b/src/util/util_env.cpp
+@@ -129,6 +129,10 @@
+   }
+   
+   
++#if defined(__PROSPERO__)
++  extern "C" void dirt3_ps5_profile_thread(const char* name);
++#endif
++
+   void setThreadName(const std::string& name) {
+ #ifdef _WIN32
+     using SetThreadDescriptionProc = HRESULT (WINAPI *) (HANDLE, PCWSTR);
+@@ -154,6 +158,10 @@
+ #if !defined(__SWITCH__) && !defined(__PROSPERO__)
+     ::pthread_setname_np(pthread_self(), posixName.data());
+ #endif
++#if defined(__PROSPERO__)
++    // The title's sampling profiler (runtime/src/profiler_ps5.cpp) wants to know this thread.
++    dirt3_ps5_profile_thread(posixName.data());
++#endif
+ #endif
+ #endif
+   }

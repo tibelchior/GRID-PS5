@@ -1,0 +1,1134 @@
+diff -ruN a/cfgGRID/entries.txt b/cfgGRID/entries.txt
+--- a/cfgGRID/entries.txt
++++ b/cfgGRID/entries.txt
+@@ -0,0 +1 @@
++00862890
+diff -ruN a/cfgGRID/hooks.txt b/cfgGRID/hooks.txt
+--- a/cfgGRID/hooks.txt
++++ b/cfgGRID/hooks.txt
+@@ -0,0 +1 @@
++0049F870
+diff -ruN a/platform/sdl/sdl_main.cpp b/platform/sdl/sdl_main.cpp
+--- a/platform/sdl/sdl_main.cpp
++++ b/platform/sdl/sdl_main.cpp
+@@ -427,7 +427,7 @@
+ }
+ 
+ // Copies everything written to stderr (our log, fatal errors with guest
+-// registers, DXVK) into <data>/dirt3.log as well: on iOS the console is gone
++// registers, DXVK) into <data>/grid.log as well: on iOS the console is gone
+ // unless a debugger is attached.
+ void tee_stderr(const std::string& path) {
+ #if defined(SDL_PLATFORM_SWITCH)
+@@ -531,23 +531,23 @@
+ // DXVK opens it read-write. This device's own recording adds to the shipped one.
+ void setup_pipeline_warmup(const std::string& data) {
+     namespace fs = std::filesystem;
+-    setenv("DXVK_SHADER_CACHE_NAME", "dirt3", 0);
++    setenv("DXVK_SHADER_CACHE_NAME", "grid", 0);
+ #if !defined(SDL_PLATFORM_IOS) && !defined(SDL_PLATFORM_TVOS) && !defined(SDL_PLATFORM_VISIONOS)
+     setenv("MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION", "1", 0);
+ #endif
+-    const std::string recorded = data + "/dirt3.pipelines";
++    const std::string recorded = data + "/grid.pipelines";
+     std::string warmup = recorded;
+     if (const char* b = SDL_GetBasePath()) {
+         const std::string base = b;
+         std::error_code ec;
+-        if (fs::exists(base + "dirt3.pipelines", ec)) warmup = base + "dirt3.pipelines:" + warmup;
++        if (fs::exists(base + "grid.pipelines", ec)) warmup = base + "grid.pipelines:" + warmup;
+         // Copy the shipped shader cache once per app build: the stamp is the
+         // shipped file's size and time, so an update brings its new cache.
+-        const std::string lut = base + "dirt3.dxvk.lut", bin = base + "dirt3.dxvk.bin";
++        const std::string lut = base + "grid.dxvk.lut", bin = base + "grid.dxvk.bin";
+         if (fs::exists(lut, ec) && fs::exists(bin, ec)) {
+             const std::string stamp = std::to_string(fs::file_size(lut, ec)) + " " +
+                 std::to_string((long long)fs::last_write_time(lut, ec).time_since_epoch().count());
+-            const std::string stamp_path = data + "/dirt3.dxvk.stamp";
++            const std::string stamp_path = data + "/grid.dxvk.stamp";
+             std::string old;
+             if (FILE* f = std::fopen(stamp_path.c_str(), "r")) {
+                 char buf[64] = {};
+@@ -583,11 +583,11 @@
+     std::error_code ec;
+     fs::create_directories(dxmt_cache, ec);
+     setenv("DXMT_SHADER_CACHE_PATH", dxmt_cache.c_str(), 0);
+-    const std::string dxmt_recorded = data + "/dirt3.dxmt-pipelines";
++    const std::string dxmt_recorded = data + "/grid.dxmt-pipelines";
+     std::string dxmt_warmup = dxmt_recorded;
+     if (const char* b = SDL_GetBasePath()) {
+         const std::string base = b;
+-        if (fs::exists(base + "dirt3.dxmt-pipelines", ec)) dxmt_warmup = base + "dirt3.dxmt-pipelines:" + dxmt_warmup;
++        if (fs::exists(base + "grid.dxmt-pipelines", ec)) dxmt_warmup = base + "grid.dxmt-pipelines:" + dxmt_warmup;
+         // The shipped converted-shader cache, installed once per app build like DXVK's.
+         const std::string shipped = base + "dxmt";
+         if (fs::is_directory(shipped, ec))
+@@ -625,14 +625,14 @@
+ }  // namespace
+ 
+ #if defined(SDL_PLATFORM_SWITCH)
+-// Everything lives on the SD card: the game in sdmc:/switch/dirt3/Dirt 3, our
+-// data (log, saves, settings) in sdmc:/switch/dirt3.
++// Everything lives on the SD card: the game in sdmc:/switch/grid/Dirt 3, our
++// data (log, saves, settings) in sdmc:/switch/grid.
+ #if defined(__SWITCH2__)
+-constexpr const char* kSwitchDataDir = "sdmc:/switch/dirt3";
++constexpr const char* kSwitchDataDir = "sdmc:/switch/grid";
+ #elif defined(DIRT3_SWITCH_DXVK)
+-constexpr const char* kSwitchDataDir = "sdmc:/switch/dirt3-dx11";
++constexpr const char* kSwitchDataDir = "sdmc:/switch/grid-dx11";
+ #else
+-constexpr const char* kSwitchDataDir = "sdmc:/switch/dirt3";
++constexpr const char* kSwitchDataDir = "sdmc:/switch/grid";
+ #endif
+ #endif
+ 
+@@ -663,11 +663,11 @@
+     }
+     if (dir.empty()) {
+ #if defined(DIRT3_SWITCH_DXVK)
+-        dir = "sdmc:/switch/dirt3/Dirt 3";
++        dir = "sdmc:/switch/grid/Dirt 3";
+ #else
+         dir = std::string(kSwitchDataDir) + "/Dirt 3";
+ #endif
+-        if (!std::filesystem::exists(dir + "/dirt3_game.exe")) {
++        if (!std::filesystem::exists(dir + "/grid_game.exe")) {
+             switch_platform::report_missing_game(dir);
+             return 2;
+         }
+@@ -690,8 +690,8 @@
+     }
+     setenv("DIRT3_DATA_DIR", android_data.c_str(), 1);
+     if (dir.empty()) dir = storage + "/Dirt 3";
+-    if (!std::filesystem::exists(dir + "/dirt3_game.exe", storage_error)) {
+-        const std::string message = "Use the installation helper to copy your PC game's Dirt 3 folder, including dirt3_game.exe, to:\n\n" + dir + "\n\nThen reopen DiRT 3. Touch controls are available when no gamepad, keyboard or mouse is connected.";
++    if (!std::filesystem::exists(dir + "/grid_game.exe", storage_error)) {
++        const std::string message = "Use the installation helper to copy your PC game's Dirt 3 folder, including grid_game.exe, to:\n\n" + dir + "\n\nThen reopen DiRT 3. Touch controls are available when no gamepad, keyboard or mouse is connected.";
+         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "DiRT 3: game data missing", message.c_str(), nullptr);
+         return 2;
+     }
+@@ -709,7 +709,7 @@
+     if (dir.empty())
+         if (const char* docs = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS)) {
+             for (std::string d : {std::string(docs) + "Dirt 3", std::string(docs)})
+-                if (std::filesystem::exists(d + "/dirt3_game.exe")) {
++                if (std::filesystem::exists(d + "/grid_game.exe")) {
+                     dir = d;
+                     break;
+                 }
+@@ -717,11 +717,11 @@
+                 // The Files app lists an app's folder only once Documents holds
+                 // something: leave the instructions there.
+                 if (FILE* f = std::fopen((std::string(docs) + "put your game here.txt").c_str(), "w")) {
+-                    std::fputs("Copy the \"Dirt 3\" game folder (the one with dirt3_game.exe) into this folder, "
++                    std::fputs("Copy the \"Dirt 3\" game folder (the one with grid_game.exe) into this folder, "
+                                "then start DiRT 3 again. Saves sync through iCloud.\n", f);
+                     std::fclose(f);
+                 }
+-                const std::string msg = "Copy the \"Dirt 3\" game folder (the one with dirt3_game.exe) into this app's "
++                const std::string msg = "Copy the \"Dirt 3\" game folder (the one with grid_game.exe) into this app's "
+                                         "Documents with Finder or the Files app, then start the app again.\n\n" +
+                                         std::string(docs);
+                 SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "DiRT 3: game data missing", msg.c_str(), nullptr);
+@@ -738,7 +738,7 @@
+                                      : std::string(std::getenv("HOME") ? std::getenv("HOME") : ".") +
+                                            "/Library/Application Support/Dirt3Recomp";
+         const std::string saved = data_dir + "/game_dir.txt";
+-        auto valid = [&](const std::string& d) { return !d.empty() && fs::exists(d + "/dirt3_game.exe", ec); };
++        auto valid = [&](const std::string& d) { return !d.empty() && fs::exists(d + "/grid_game.exe", ec); };
+         if (const char* b = SDL_GetBasePath()) {
+             // Contents/Resources/ inside the .app; the folder that holds the .app.
+             for (const fs::path& p : {fs::path(b) / "../../../Dirt 3", fs::path(b) / "Dirt 3"})
+@@ -759,8 +759,8 @@
+             }
+         while (dir.empty()) {
+             std::string picked;
+-            if (!platform::choose_folder("Select the DiRT 3 game folder (the one with dirt3_game.exe)", picked)) {
+-                std::fprintf(stderr, "usage: %s --game <folder with dirt3_game.exe>\n", argv[0]);
++            if (!platform::choose_folder("Select the DiRT 3 game folder (the one with grid_game.exe)", picked)) {
++                std::fprintf(stderr, "usage: %s --game <folder with grid_game.exe>\n", argv[0]);
+                 return 2;
+             }
+             if (valid(picked)) {
+@@ -775,7 +775,7 @@
+     }
+ #endif
+     if (dir.empty()) {
+-        std::fprintf(stderr, "usage: %s --game <folder with dirt3_game.exe>\n", argv[0]);
++        std::fprintf(stderr, "usage: %s --game <folder with grid_game.exe>\n", argv[0]);
+         return 2;
+     }
+     rt::set_game_dir(dir);
+@@ -806,7 +806,7 @@
+ #endif
+ #endif
+         rt::set_discovery_log(data + "/recomp_discovered.txt");
+-        tee_stderr(data + "/dirt3.log");
++        tee_stderr(data + "/grid.log");
+ #if defined(__SWITCH2__)
+         switch_platform::boost_cpu_clock();
+ #endif
+@@ -868,19 +868,19 @@
+     if (std::filesystem::exists(data + "/gamecontrollerdb.txt"))
+         SDL_AddGamepadMappingsFromFile((data + "/gamecontrollerdb.txt").c_str());
+ 
+-    g_saves_dir = data + "/C/Users/Player/Documents/My Games/DiRT3/savegame";
++    g_saves_dir = data + "/C/Users/Player/Documents/Codemasters/GRID/savegame";
+ #if defined(DIRT3_SWITCH_DXVK)
+-    vfs::set_save_dir("sdmc:/switch/dirt3/C/Users/Player/Documents/My Games/DiRT3/savegame");
++    vfs::set_save_dir("sdmc:/switch/grid/C/Users/Player/Documents/Codemasters/GRID/savegame");
+     g_saves_dir = vfs::save_dir();
+     rt::log("Switch DX11: shared saves at %s", vfs::save_dir().c_str());
+ #endif
+-    g_hw_config = data + "/C/Users/Player/Documents/My Games/DiRT3/hardwaresettings/hardware_settings_config.xml";
++    g_hw_config = data + "/C/Users/Player/Documents/Codemasters/GRID/hardwaresettings/hardware_settings_config.xml";
+ 
+     rt::startup_trace("startup.guest-memory.begin");
+     if (!rt::mem_init()) return 1;
+     rt::startup_trace("startup.guest-memory.end");
+     std::string err;
+-    if (!rt::load_image(dir + "/dirt3_game.exe", err)) {
++    if (!rt::load_image(dir + "/grid_game.exe", err)) {
+         std::fprintf(stderr, "error: %s\n", err.c_str());
+         return 1;
+     }
+@@ -889,6 +889,7 @@
+     switch_platform::install_resolution_restrictions();
+     switch_platform::install_worker_topology();
+ #endif
++    if (std::getenv("GRID_LOGFLAG")) wr8(0xE58DC0, 1);  // debug: enable the game's own logger
+     shim::install_resolution_labels();
+     shim::install_menu_patches(platform::metalfx_supported());
+ 
+diff -ruN a/shims/CMakeLists.txt b/shims/CMakeLists.txt
+--- a/shims/CMakeLists.txt
++++ b/shims/CMakeLists.txt
+@@ -13,6 +13,7 @@
+   misc/misc.cpp
+   misc/envmap_list.cpp
+   misc/dirt3_stubs.cpp
++  misc/grid_stubs.cpp
+   xlive/xlive.cpp
+   ws2_32/ws2_32.cpp
+   d3d9/bridge.cpp
+diff -ruN a/shims/d3d9/bridge.cpp b/shims/d3d9/bridge.cpp
+--- a/shims/d3d9/bridge.cpp
++++ b/shims/d3d9/bridge.cpp
+@@ -1227,7 +1227,7 @@
+         if (manual) {
+             rt::log("d3d9: manual GPU capture %s: %s", success ? "complete" : "PARTIAL/failed", g_manual_dir.c_str());
+             const char* data = std::getenv("DIRT3_DATA_DIR");
+-            if (!copy_capture_log(std::string(data ? data : ".") + "/dirt3.log", g_manual_dir + "/dirt3.log")) {
++            if (!copy_capture_log(std::string(data ? data : ".") + "/grid.log", g_manual_dir + "/grid.log")) {
+                 success = false;
+                 std::ofstream report(g_manual_dir + "/capture.txt", std::ios::app);
+                 report << "Status: PARTIAL (log snapshot copy failed)\n";
+diff -ruN a/shims/d3dx9/d3dx9.cpp b/shims/d3dx9/d3dx9.cpp
+--- a/shims/d3dx9/d3dx9.cpp
++++ b/shims/d3dx9/d3dx9.cpp
+@@ -1,4 +1,4 @@
+-// d3dx9_43: shader compile, constant tables, input semantics, texture helpers.
++// d3dx9_41: shader compile, constant tables, input semantics, texture helpers.
+ //
+ // D3DXCompileShader serves the game's fixed set of run-time shaders from
+ // bytecode assembled by tools/scripts/sm3asm.py. ID3DXConstantTable is built
+@@ -443,7 +443,7 @@
+ }  // namespace
+ 
+ // D3DXCompileShader(src, len, defines, include, function, profile, flags, **shader, **errors, **constants)
+-STDCALL(d3dx9_43, D3DXCompileShader, 10) {
++STDCALL(d3dx9_41, D3DXCompileShader, 10) {
+     const char* fn = a.str(4);
+     const char* profile = a.str(5);
+     for (uint32_t i : {7u, 8u, 9u})
+@@ -470,7 +470,7 @@
+     return E_FAIL;
+ }
+ 
+-STDCALL(d3dx9_43, D3DXGetShaderConstantTable, 2) {  // (const DWORD* function, ID3DXConstantTable**)
++STDCALL(d3dx9_41, D3DXGetShaderConstantTable, 2) {  // (const DWORD* function, ID3DXConstantTable**)
+     if (!a[1]) return D3DERR_INVALIDCALL;
+     const uint32_t t = a[0] ? new_constant_table(a[0]) : 0;
+     wr32(a[1], t);
+@@ -478,7 +478,7 @@
+ }
+ 
+ // D3DXGetShaderInputSemantics(function, D3DXSEMANTIC* out, UINT* count): vertex inputs from dcl tokens.
+-STDCALL(d3dx9_43, D3DXGetShaderInputSemantics, 3) {
++STDCALL(d3dx9_41, D3DXGetShaderInputSemantics, 3) {
+     if (!a[0]) return D3DERR_INVALIDCALL;
+     uint32_t n = 0;
+     for (uint32_t p = a[0] + 4;;) {
+@@ -507,7 +507,7 @@
+ }
+ 
+ // D3DXFilterTexture(texture, palette, srcLevel, filter): box-filtered mips for 32-bit 2D textures.
+-STDCALL(d3dx9_43, D3DXFilterTexture, 4) {
++STDCALL(d3dx9_41, D3DXFilterTexture, 4) {
+     auto* base = static_cast<IDirect3DBaseTexture9*>(d3d9_host(a[0]));
+     if (!base || base->GetType() != D3DRTYPE_TEXTURE) return D3D_OK;
+     auto* tex = static_cast<IDirect3DTexture9*>(base);
+@@ -541,7 +541,7 @@
+ }
+ 
+ // D3DXFillTexture(texture, LPD3DXFILL2D fn, data): calls the guest function per texel (32-bit formats).
+-STDCALL(d3dx9_43, D3DXFillTexture, 3) {
++STDCALL(d3dx9_41, D3DXFillTexture, 3) {
+     auto* tex = static_cast<IDirect3DTexture9*>(d3d9_host(a[0]));
+     if (!tex) return D3DERR_INVALIDCALL;
+     const uint32_t scratch = rt::heap_alloc(32);  // out vec4, texcoord vec2, texel size vec2
+@@ -570,7 +570,7 @@
+     return D3D_OK;
+ }
+ 
+-STDCALL(d3dx9_43, D3DXSaveSurfaceToFileA, 5) {
++STDCALL(d3dx9_41, D3DXSaveSurfaceToFileA, 5) {
+     rt::log("D3DXSaveSurfaceToFileA(%s) ignored", a.str(0) ? a.str(0) : "");
+     return D3D_OK;
+ }
+diff -ruN a/shims/frontend/menu_patch.cpp b/shims/frontend/menu_patch.cpp
+--- a/shims/frontend/menu_patch.cpp
++++ b/shims/frontend/menu_patch.cpp
+@@ -265,7 +265,25 @@
+     return 1;
+ }
+ 
++// GRID caps the usable resolution with <res mem=".." maxWidth="1280"/> in its restrictions file (a
++// 2009 video-memory budget). Serve a copy with the cap raised so 1440p and above can be selected.
++static void patch_grid_max_width() {
++    const std::string rel = "system/hardware_settings_restrictions.xml";
++    std::string x = read_file(vfs::host_path(std::string(vfs::kInstallDir) + "\\" + rel));
++    const size_t at = x.find("maxWidth=\"1280\"");
++    if (at == std::string::npos) return;
++    x.replace(at, 15, "maxWidth=\"7680\"");
++    const std::string dir = vfs::data_dir() + "/overlay";
++    std::error_code ec;
++    std::filesystem::create_directories(dir, ec);
++    const std::string out = dir + "/hardware_settings_restrictions.xml";
++    if (!write_file(out, x)) return;
++    vfs::set_override(rel, out);
++    rt::log("menu: resolution cap raised to 7680");
++}
++
+ void install_menu_patches(bool metalfx_row) {
++    patch_grid_max_width();
+     if (!metalfx_row) return;  // the row stays hidden, as the game ships it
+     const std::string dir = vfs::data_dir() + "/overlay";
+     std::error_code ec;
+diff -ruN a/shims/input/dinput8.cpp b/shims/input/dinput8.cpp
+--- a/shims/input/dinput8.cpp
++++ b/shims/input/dinput8.cpp
+@@ -2,7 +2,16 @@
+ // are not enumerated: the game reads pads through XInput.
+ #include <SDL3/SDL.h>
+ 
++#include <atomic>
++#include <cstdlib>
++#include <cstring>
+ #include <mutex>
++#include <string>
++#include <thread>
++#include <vector>
++#if defined(__PROSPERO__)
++#include "../../platform/ps5/ps5_console.h"
++#endif
+ #include <unordered_map>
+ 
+ #include "../guest_com.h"
+@@ -10,6 +19,7 @@
+ using namespace shim;
+ 
+ namespace {
++std::atomic<uint8_t> g_injected[256];  // keys held by the on-screen keyboard (scan codes)
+ 
+ constexpr uint32_t DI_OK = 0, DI_NOEFFECT = 1, DIERR_UNSUPPORTED = 0x80004001, DIERR_INVALIDPARAM = 0x80070057,
+                    DIERR_DEVICENOTREG = 0x80040154;
+@@ -24,6 +34,7 @@
+ struct Device {
+     DevKind kind;
+     uint32_t data_size = 0;
++    uint8_t prev[256] = {};  // keyboard: the state the buffered events were last computed against
+ };
+ std::mutex g_mu;
+ std::unordered_map<uint32_t, Device> g_devices;  // guest object -> state
+@@ -116,6 +127,17 @@
+     g_devices[a[0]].data_size = a[1] ? rd32(a[1] + 12) : 0;
+     return DI_OK;
+ }
++// The keyboard as DirectInput scan codes (0x80 = down): SDL's keyboard plus the on-screen keyboard's keys.
++void keyboard_snapshot(uint8_t out[256]) {
++    std::memset(out, 0, 256);
++    int n = 0;
++    const bool* keys = SDL_GetKeyboardState(&n);
++    for (int s = 0; keys && s < n; ++s)
++        if (keys[s])
++            if (const uint8_t dik = dik_of(SDL_Scancode(s))) out[dik] = 0x80;
++    for (uint32_t k = 1; k < 256; ++k)
++        if (g_injected[k].load(std::memory_order_relaxed)) out[k] = 0x80;
++}
+ uint32_t dev_get_state(X86*, const Args& a) {  // (cbData, lpvData)
+     Device d;
+     {
+@@ -126,11 +148,10 @@
+     if (!out) return DIERR_INVALIDPARAM;
+     std::memset(rt::host_ptr(out), 0, size);
+     if (d.kind == DevKind::Keyboard) {
+-        int n = 0;
+-        const bool* keys = SDL_GetKeyboardState(&n);
+-        for (int s = 0; keys && s < n; ++s)
+-            if (keys[s])
+-                if (const uint8_t dik = dik_of(SDL_Scancode(s)); dik && dik < size) wr8(out + dik, 0x80);
++        uint8_t keys[256];
++        keyboard_snapshot(keys);
++        for (uint32_t k = 1; k < 256 && k < size; ++k)
++            if (keys[k]) wr8(out + k, 0x80);
+     } else {
+         float dx = 0, dy = 0;
+         const SDL_MouseButtonFlags b = SDL_GetRelativeMouseState(&dx, &dy);
+@@ -144,7 +165,30 @@
+     return DI_OK;
+ }
+ uint32_t dev_get_data(X86*, const Args& a) {  // (cbObjectData, rgdod, pdwInOut, flags): buffered input
+-    if (a[3]) wr32(a[3], 0);
++    // Keyboard: one event (DIDEVICEOBJECTDATA: offset, data, time stamp, sequence, app data) per key change.
++    const uint32_t cb = a[1], out = a[2], count_ptr = a[3], flags = a[4];
++    if (!count_ptr) return DIERR_INVALIDPARAM;
++    const uint32_t capacity = rd32(count_ptr);
++    uint32_t produced = 0;
++    std::lock_guard lk(g_mu);
++    Device& d = g_devices[a[0]];
++    if (d.kind == DevKind::Keyboard && out && cb >= 16) {
++        uint8_t now[256];
++        keyboard_snapshot(now);
++        static uint32_t sequence = 0;
++        for (uint32_t k = 1; k < 256 && produced < capacity; ++k) {
++            if (now[k] == d.prev[k]) continue;
++            const uint32_t e = out + produced * cb;
++            std::memset(rt::host_ptr(e), 0, cb);
++            wr32(e + 0, k);
++            wr32(e + 4, now[k]);
++            wr32(e + 8, SDL_GetTicks());
++            wr32(e + 12, ++sequence);
++            ++produced;
++            if (!(flags & 1)) d.prev[k] = now[k];  // DIGDD_PEEK leaves the events queued
++        }
++    }
++    wr32(count_ptr, produced);
+     return DI_OK;
+ }
+ uint32_t dev_get_info(X86*, const Args& a) {  // (DIDEVICEINSTANCEA*)
+@@ -248,4 +292,143 @@
+     if (!a[3]) return DIERR_INVALIDPARAM;
+     wr32(a[3], new_object(dinput_vtable(), 0));
+     return DI_OK;
++}
++
++// ---- On-screen keyboard for GRID's name entry (ScreenOverlayTextEntry / IBTextEntry) ----
++// GRID takes typed text from WM_CHAR messages (its window procedure forwards them to the text
++// input at 0x00EC1DB0). A pad has none, so while a text entry is on screen the console's on-screen
++// keyboard (ps5_console.h) asks for the text, and it is then sent to the game as WM_CHAR messages:
++// Backspace (8) for the old text, the new characters, then Return (13), or Escape (27) when cancelled.
++// f_0049F870 is IBTextEntry's per-frame update (thiscall, this in ecx); it runs once a frame
++// while an entry is up, which is how the start of an entry is noticed (a gap in the calls).
++extern "C" void f_0049F870_orig(X86* c);
++namespace shim {
++void post_message(uint32_t hwnd, uint32_t msg, uint32_t wp, uint32_t lp);
++}
++
++namespace {
++
++struct TextEntryDriver {
++    std::mutex mu;
++    uint32_t active_this = 0;
++    uint32_t last_tick = 0;
++    int calls = 0;  // updates since this entry appeared
++    enum { Idle, Asking, Typing, Finished } state = Idle;
++    std::atomic<bool> answered{false};
++    bool confirmed = false;
++    std::string answer;
++    std::vector<uint16_t> script;  // characters to send
++    bool escape_key = false;       // also press Escape on the keyboard (cancel)
++    size_t step = 0;
++    int phase = 0;
++    int old_len = 0;
++};
++TextEntryDriver g_te;
++
++std::string read_cstr(uint32_t a, size_t limit) {
++    std::string s;
++    for (size_t i = 0; a && i < limit; ++i) {
++        const char ch = char(rd8(a + uint32_t(i)));
++        if (!ch) break;
++        s += ch;
++    }
++    return s;
++}
++
++std::string entry_text(uint32_t self) {
++    const uint32_t obj = rd32(self + 0x18);
++    return obj ? read_cstr(rd32(obj + 0x28), 64) : std::string();
++}
++
++void text_entry_tick(uint32_t self) {
++    TextEntryDriver& t = g_te;
++    const uint32_t now = SDL_GetTicks();
++    std::lock_guard lk(t.mu);
++    const bool fresh = now - t.last_tick > 700;  // no update for a while: a new entry
++    t.last_tick = now;
++    if (fresh) {
++        g_injected[0x01].store(0, std::memory_order_relaxed);
++        t.state = TextEntryDriver::Idle;
++        t.active_this = 0;
++        t.calls = 0;
++    }
++    if (t.active_this && t.active_this != self) return;  // another entry object: not the one asked about
++    if (t.state == TextEntryDriver::Idle && ++t.calls < 8) return;  // the entry fills its buffer first
++    if (t.state == TextEntryDriver::Idle) {
++        t.active_this = self;
++        const std::string current = entry_text(self);
++        const uint32_t obj = rd32(self + 0x18);
++        unsigned max_chars = obj ? rd32(obj + 4) : 14;
++        if (max_chars == 0 || max_chars > 40) max_chars = 14;
++        t.old_len = int(current.size());
++        rt::log("textentry: opened (text \"%s\", up to %u characters)", current.c_str(), max_chars);
++        t.state = TextEntryDriver::Asking;
++        t.answered = false;
++        const char* scripted = std::getenv("GRID_TEXT_TEST");
++        if (scripted) {  // scripted test runs: answers at once
++            t.answer = scripted;
++            t.confirmed = true;
++            t.answered = true;
++        } else {
++#if defined(__PROSPERO__)
++            std::thread([current, max_chars] {
++                std::string result;
++                const bool ok = ps5::keyboard_run(current, max_chars, result);
++                std::lock_guard lk2(g_te.mu);
++                g_te.answer = result;
++                g_te.confirmed = ok;
++                g_te.answered = true;
++            }).detach();
++#else
++            t.answer.clear();
++            t.confirmed = false;
++            t.answered = true;
++#endif
++        }
++        return;
++    }
++    if (t.state == TextEntryDriver::Asking && t.answered) {
++        t.script.clear();
++        t.step = 0;
++        t.phase = 0;
++        t.escape_key = !t.confirmed;
++        if (t.confirmed) {
++            for (int i = 0; i < t.old_len + 2; ++i) t.script.push_back(8);  // Backspace
++            for (char ch : t.answer)
++                if (ch >= 32 && ch < 127) t.script.push_back(uint16_t(ch));
++            t.script.push_back(13);  // Return
++        } else {
++            t.script.push_back(27);  // Escape
++        }
++        rt::log("textentry: %s \"%s\" (%zu keys)", t.confirmed ? "typing" : "cancelled", t.answer.c_str(), t.script.size());
++        t.state = TextEntryDriver::Typing;
++        return;
++    }
++    if (t.state == TextEntryDriver::Typing) {
++        // Each key: the message on the first frame, two quiet frames after it.
++        if (t.step >= t.script.size()) {
++            g_injected[0x01].store(0, std::memory_order_relaxed);
++            rt::log("textentry: done, the field now reads \"%s\"", entry_text(self).c_str());
++            t.state = TextEntryDriver::Finished;
++            return;
++        }
++        if (t.phase == 0) {
++            const uint16_t ch = t.script[t.step];
++            shim::post_message(0, 0x102 /* WM_CHAR */, ch, 1);
++            if (ch == 27) g_injected[0x01].store(1, std::memory_order_relaxed);
++        } else if (t.phase == 2) {
++            g_injected[0x01].store(0, std::memory_order_relaxed);
++        }
++        if (++t.phase == 3) {
++            t.phase = 0;
++            ++t.step;
++        }
++    }
++}
++
++}  // namespace
++
++extern "C" void f_0049F870(X86* c) {
++    text_entry_tick(c->ecx);
++    f_0049F870_orig(c);
+ }
+diff -ruN a/shims/kernel32/memory.cpp b/shims/kernel32/memory.cpp
+--- a/shims/kernel32/memory.cpp
++++ b/shims/kernel32/memory.cpp
+@@ -81,7 +81,7 @@
+ }
+ 
+ // File mappings. The only one the game opens is the SecuROM launcher block
+-// "-=[SMS_dirt3_game.exe_SMS]=-" (100 bytes: launcher window handle and a
++// "-=[SMS_grid_game.exe_SMS]=-" (100 bytes: launcher window handle and a
+ // message id). Providing it zero-filled stands in for running DiRT3.exe.
+ namespace {
+ struct Mapping : KObject {
+diff -ruN a/shims/kernel32/process.cpp b/shims/kernel32/process.cpp
+--- a/shims/kernel32/process.cpp
++++ b/shims/kernel32/process.cpp
+@@ -18,7 +18,7 @@
+ 
+ namespace {
+ 
+-const std::string kExePath = std::string(vfs::kInstallDir) + "\\dirt3_game.exe";
++const std::string kExePath = std::string(vfs::kInstallDir) + "\\grid_game.exe";
+ const std::string& guest_command_line() {
+     static const std::string line = [] {
+         std::string result = "\"" + kExePath + "\"";
+@@ -131,7 +131,7 @@
+ STDCALL(kernel32, GetModuleHandleA, 1) {
+     if (!a[0]) return recomp_image_info.image_base;
+     const std::string key = module_key(a.str(0));
+-    if (key == "dirt3_game.exe") return recomp_image_info.image_base;
++    if (key == "grid_game.exe") return recomp_image_info.image_base;
+     if (const Module* m = find_module(key)) return m->handle;
+     set_last_error(ERROR_MOD_NOT_FOUND);
+     return 0;
+@@ -413,7 +413,7 @@
+ STDCALL(kernel32, GetModuleHandleW, 1) {
+     if (!a[0]) return recomp_image_info.image_base;
+     const std::string key = module_key(from_utf16(a[0]).c_str());
+-    if (key == "dirt3_game.exe") return recomp_image_info.image_base;
++    if (key == "grid_game.exe") return recomp_image_info.image_base;
+     if (const Module* m = find_module(key)) return m->handle;
+     set_last_error(ERROR_MOD_NOT_FOUND);
+     return 0;
+diff -ruN a/shims/kernel32/sync.cpp b/shims/kernel32/sync.cpp
+--- a/shims/kernel32/sync.cpp
++++ b/shims/kernel32/sync.cpp
+@@ -325,9 +325,13 @@
+     const uint32_t r = wait_handles(hs, a[2] != 0, a[3]);
+     if (log_waits()) {
+         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
+-        if (ms >= 50)
+-            rt::log("t%u WaitForMultipleObjects(%u, all=%u, %d) = %X after %lld ms [from %08X]", rt::current_thread_id(),
+-                    a[0], a[2], int32_t(a[3]), r, (long long)ms, rd32(c->esp));
++        if (ms >= 50) {
++            std::string hl;
++            char b[16];
++            for (uint32_t h : hs) { std::snprintf(b, sizeof b, " %X", h); hl += b; }
++            rt::log("t%u WaitForMultipleObjects(%u, all=%u, %d) = %X after %lld ms [from %08X] handles:%s", rt::current_thread_id(),
++                    a[0], a[2], int32_t(a[3]), r, (long long)ms, rd32(c->esp), hl.c_str());
++        }
+     }
+     return r;
+ }
+@@ -341,7 +345,20 @@
+ // ---- events, mutexes, semaphores, timers ----
+ STDCALL(kernel32, CreateEventA, 4) { return handle_new(std::make_shared<Event>(a[1] != 0, a[2] != 0)); }
+ bool shim::set_event(uint32_t h) { return modify<Event>(h, [](Event& e) { e.set = true; return 1u; }) != 0; }
+-STDCALL(kernel32, SetEvent, 1) { return set_event(a[0]) ? 1 : 0; }
++STDCALL(kernel32, SetEvent, 1) {
++    // Debug (GRID_STACK=1): print code addresses found on the guest stack of the main thread's SetEvent calls.
++    static const bool dbg = std::getenv("GRID_STACK") != nullptr;
++    if (dbg) {
++        std::string out;
++        char b[16];
++        for (int i = 0; i < 160; ++i) {
++            const uint32_t v = rd32(c->esp + 4 * i);
++            if (v >= 0x401000 && v < 0x12A4470 && !(v >= 0xC89000 && v < 0xFB6000) && v < 0xC89000) { std::snprintf(b, sizeof b, " %X", v); out += b; }
++        }
++        rt::log("SETEVENT t%u %X stack:%s", rt::current_thread_id(), a[0], out.c_str());
++    }
++    return set_event(a[0]) ? 1 : 0;
++}
+ STDCALL(kernel32, ResetEvent, 1) { return modify<Event>(a[0], [](Event& e) { e.set = false; return 1u; }); }
+ STDCALL(kernel32, CreateMutexA, 3) {
+     auto m = std::make_shared<Mutex>();
+diff -ruN a/shims/misc/grid_stubs.cpp b/shims/misc/grid_stubs.cpp
+--- a/shims/misc/grid_stubs.cpp
++++ b/shims/misc/grid_stubs.cpp
+@@ -0,0 +1,44 @@
++// Imports Race Driver GRID has and DiRT 3 does not: CryptoAPI random numbers, process listing,
++// adapter info, sockets, D3DX output semantics. Everything reports "unavailable" or succeeds quietly.
++#include "../shim.h"
++
++#include <cstdlib>
++#include <random>
++
++using namespace shim;
++
++// ---- advapi32 crypto (used to seed random numbers) ----
++STDCALL(advapi32, CryptAcquireContextA, 5) {
++    if (a[0]) wr32(a[0], 0xC0DE0001);
++    return 1;
++}
++STDCALL(advapi32, CryptGenRandom, 3) {
++    static std::mt19937_64 rng{std::random_device{}()};
++    for (uint32_t i = 0; i < a[1]; ++i) wr8(a[2] + i, uint8_t(rng()));
++    return 1;
++}
++STDCALL(advapi32, CryptReleaseContext, 2) { return 1; }
++
++// ---- d3dx9_41 ----
++STDCALL(d3dx9_41, D3DXGetShaderOutputSemantics, 3) {  // (const DWORD* function, D3DXSEMANTIC*, UINT* count)
++    if (a[2]) wr32(a[2], 0);
++    return 0;
++}
++
++// ---- iphlpapi / toolhelp / threads / sockets ----
++STDCALL(iphlpapi, GetAdaptersInfo, 2) { return 232; }  // ERROR_NO_DATA
++STDCALL(kernel32, CreateToolhelp32Snapshot, 2) { return ~0u; }  // INVALID_HANDLE_VALUE: no process list
++STDCALL(kernel32, Process32First, 2) { return 0; }
++STDCALL(kernel32, Process32Next, 2) { return 0; }
++STDCALL(kernel32, TerminateThread, 2) { return 1; }
++STDCALL(ws2_32, WSARecv, 7) { return ~0u; }  // SOCKET_ERROR
++
++// ---- ddraw: GRID asks DirectDraw for video memory; failing makes it use the D3D9 values ----
++STDCALL(ddraw, DirectDrawCreateEx, 4) {
++    if (a[1]) wr32(a[1], 0);
++    return 0x80004005u;  // E_FAIL
++}
++STDCALL(ddraw, DirectDrawCreate, 3) {
++    if (a[1]) wr32(a[1], 0);
++    return 0x80004005u;
++}
+diff -ruN a/shims/misc/misc.cpp b/shims/misc/misc.cpp
+--- a/shims/misc/misc.cpp
++++ b/shims/misc/misc.cpp
+@@ -157,7 +157,7 @@
+ }
+ STDCALL(shell32, CommandLineToArgvW, 2) {
+     // One argument: the executable path.
+-    const std::string exe = std::string(vfs::kInstallDir) + "\\dirt3_game.exe";
++    const std::string exe = std::string(vfs::kInstallDir) + "\\grid_game.exe";
+     const uint32_t block = rt::heap_alloc(uint32_t(8 + (exe.size() + 1) * 2), true);
+     wr32(block, block + 8);
+     wr32(block + 4, 0);
+@@ -181,6 +181,10 @@
+     return 0;
+ }
+ STDCALL(shlwapi, StrStrIA, 2) {
++    // Windows returns NULL for a null argument or an empty search string. GRID's
++    // anti-cheat window/process scan has empty blacklist entries: matching them
++    // set its quit flag and the game exited one frame after the first Present.
++    if (!a[0] || !a[1] || !rd8(a[1])) return 0;
+     const char* hay = a.str(0);
+     const char* needle = a.str(1);
+     const size_t n = std::strlen(needle);
+@@ -257,7 +261,7 @@
+     if (a[3]) wr32(a[3], 4);
+     return 1;
+ }
+-STDCALL(psapi, GetModuleBaseNameA, 4) { return copy_out(a[2], a[3], "dirt3_game.exe"); }  // (process, module, name, size)
++STDCALL(psapi, GetModuleBaseNameA, 4) { return copy_out(a[2], a[3], "grid_game.exe"); }  // (process, module, name, size)
+ STDCALL(psapi, GetProcessMemoryInfo, 3) {  // (process, PROCESS_MEMORY_COUNTERS*, cb)
+     if (a[1] && a[2] >= 40) {
+         std::memset(rt::host_ptr(a[1]), 0, a[2]);
+diff -ruN a/shims/steam/steam_offline.cpp b/shims/steam/steam_offline.cpp
+--- a/shims/steam/steam_offline.cpp
++++ b/shims/steam/steam_offline.cpp
+@@ -72,7 +72,7 @@
+ // ISteamUser::GetUserDataFolder(char* buf, int cb): the game appends "\\savegame" to it.
+ // Answer the folder the PC version uses, which the VFS maps to the save dir.
+ SHIM_DEFINE(imp_steam_api_OfflineUserDataFolder, steam_api, "OfflineUserDataFolder", 0, 8) {
+-    static const char kDir[] = "C:\\Users\\Player\\Documents\\My Games\\DiRT3";
++    static const char kDir[] = "C:\\Users\\Player\\Documents\\Codemasters\\GRID";
+     if (!a[0] || a[1] < sizeof(kDir)) return 0;
+     std::memcpy(rt::host_ptr(a[0]), kDir, sizeof(kDir));
+     return 1;
+diff -ruN a/shims/user32/user32.cpp b/shims/user32/user32.cpp
+--- a/shims/user32/user32.cpp
++++ b/shims/user32/user32.cpp
+@@ -11,6 +11,9 @@
+ #include "../guest_printf.h"
+ #include <atomic>
+ #include <cstdlib>
++#include <chrono>
++#include <thread>
++#include <algorithm>
+ #include "../shim.h"
+ 
+ using namespace shim;
+@@ -137,16 +140,15 @@
+     return hwnd;
+ }
+ 
+-uint32_t peek(const Args& a) {
++uint32_t peek_impl(uint32_t d, bool remove) {
+     std::lock_guard lk(g_mu);
+     if (g_queue.empty()) return 0;
+     Msg m = g_queue.front();
+-    if (a[4] & 1) g_queue.pop_front();  // PM_REMOVE
++    if (remove) g_queue.pop_front();
+     // A message addressed to a window that has since been destroyed (the loading
+     // splash goes away before the host's focus events are dispatched) goes to the
+     // newest window, like activation after a DestroyWindow on Windows.
+     if (m.msg != WM_QUIT && m.hwnd && !g_windows.count(m.hwnd) && !g_windows.empty()) m.hwnd = g_windows.rbegin()->first;
+-    const uint32_t d = a[0];
+     wr32(d + 0, m.hwnd);
+     wr32(d + 4, m.msg);
+     wr32(d + 8, m.wparam);
+@@ -157,6 +159,8 @@
+     return 1;
+ }
+ 
++uint32_t peek(const Args& a) { return peek_impl(a[0], a[4] & 1); }
++
+ uint32_t dispatch(X86* c, uint32_t msg) {
+     return send(c, rd32(msg), rd32(msg + 4), rd32(msg + 8), rd32(msg + 12));
+ }
+@@ -223,6 +227,25 @@
+ STDCALL(user32, DefWindowProcW, 4) { return a[1] == WM_NCCREATE ? 1 : 0; }
+ STDCALL(user32, PeekMessageA, 5) { return peek(a); }
+ STDCALL(user32, PeekMessageW, 5) { return peek(a); }
++// GRID additions: blocking GetMessage, posting, timers (timers never fire), misc window calls.
++STDCALL(user32, GetMessageA, 4) {
++    for (;;) {
++        if (peek_impl(a[0], true)) return rd32(a[0] + 4) == WM_QUIT ? 0 : 1;
++        std::this_thread::sleep_for(std::chrono::milliseconds(2));
++    }
++}
++STDCALL(user32, PostMessageA, 4) { post_message(a[0], a[1], a[2], a[3]); return 1; }
++STDCALL(user32, PostThreadMessageA, 4) { post_message(0, a[1], a[2], a[3]); return 1; }
++STDCALL(user32, SetTimer, 4) { return a[1] ? a[1] : 1; }
++STDCALL(user32, KillTimer, 2) { return 1; }
++STDCALL(user32, MsgWaitForMultipleObjects, 5) {
++    std::this_thread::sleep_for(std::chrono::milliseconds(std::min<uint32_t>(a[2] == 0xFFFFFFFFu ? 5 : a[2], 5)));
++    { std::lock_guard lk(g_mu); if (!g_queue.empty()) return a[0]; }  // WAIT_OBJECT_0 + nCount: a message is queued
++    return 0x102;  // WAIT_TIMEOUT
++}
++STDCALL(user32, BringWindowToTop, 1) { return 1; }
++STDCALL(user32, SetForegroundWindow, 1) { return 1; }
++STDCALL(user32, ChangeDisplaySettingsA, 2) { return 0; }  // DISP_CHANGE_SUCCESSFUL
+ STDCALL(user32, TranslateMessage, 1) { return 0; }
+ STDCALL(user32, DispatchMessageA, 1) { return dispatch(c, a[0]); }
+ STDCALL(user32, DispatchMessageW, 1) { return dispatch(c, a[0]); }
+@@ -391,8 +414,91 @@
+ STDCALL(user32, UnhookWindowsHookEx, 1) { return 1; }
+ STDCALL(user32, CallNextHookEx, 4) { return 0; }
+ STDCALL(user32, SendInput, 3) { return a[0]; }
+-STDCALL(user32, MapVirtualKeyA, 2) { return 0; }
+-STDCALL(user32, ToUnicode, 6) { return 0; }
++// Key names and typed characters (the game asks MapVirtualKey for the virtual key of a DirectInput
++// scan code, then ToUnicode for its character, with no keys held: US layout).
++namespace {
++uint32_t vk_of_scan(uint32_t sc, bool extended) {
++    static const char kRow1[] = "QWERTYUIOP", kRow2[] = "ASDFGHJKL", kRow3[] = "ZXCVBNM";
++    if (sc >= 0x10 && sc <= 0x19) return kRow1[sc - 0x10];
++    if (sc >= 0x1E && sc <= 0x26) return kRow2[sc - 0x1E];
++    if (sc >= 0x2C && sc <= 0x32) return kRow3[sc - 0x2C];
++    if (sc >= 0x02 && sc <= 0x0A) return '1' + (sc - 0x02);
++    if (sc >= 0x3B && sc <= 0x44) return 0x70 + (sc - 0x3B);  // F1..F10
++    switch (sc) {
++        case 0x0B: return '0';
++        case 0x01: return 0x1B;
++        case 0x0C: return 0xBD;
++        case 0x0D: return 0xBB;
++        case 0x0E: return 0x08;
++        case 0x0F: return 0x09;
++        case 0x1A: return 0xDB;
++        case 0x1B: return 0xDD;
++        case 0x1C: return 0x0D;
++        case 0x1D: return extended ? 0xA2 : 0x11;
++        case 0x27: return 0xBA;
++        case 0x28: return 0xDE;
++        case 0x29: return 0xC0;
++        case 0x2A: return extended ? 0xA0 : 0x10;
++        case 0x2B: return 0xDC;
++        case 0x33: return 0xBC;
++        case 0x34: return 0xBE;
++        case 0x35: return 0xBF;
++        case 0x36: return extended ? 0xA1 : 0x10;
++        case 0x38: return extended ? 0xA4 : 0x12;
++        case 0x39: return 0x20;
++        case 0x3A: return 0x14;
++        case 0x57: return 0x7A;
++        case 0x58: return 0x7B;
++        case 0xC7: return 0x24;
++        case 0xC8: return 0x26;
++        case 0xC9: return 0x21;
++        case 0xCB: return 0x25;
++        case 0xCD: return 0x27;
++        case 0xCF: return 0x23;
++        case 0xD0: return 0x28;
++        case 0xD1: return 0x22;
++        case 0xD2: return 0x2D;
++        case 0xD3: return 0x2E;
++    }
++    return 0;
++}
++uint16_t char_of_vk(uint32_t vk, bool shift) {
++    if (vk >= 'A' && vk <= 'Z') return uint16_t(shift ? vk : vk - 'A' + 'a');
++    if (vk >= '0' && vk <= '9') return uint16_t(shift ? ")!@#$%^&*("[vk - '0'] : vk);
++    switch (vk) {
++        case 0x20: return ' ';
++        case 0xBA: return shift ? ':' : ';';
++        case 0xBB: return shift ? '+' : '=';
++        case 0xBC: return shift ? '<' : ',';
++        case 0xBD: return shift ? '_' : '-';
++        case 0xBE: return shift ? '>' : '.';
++        case 0xBF: return shift ? '?' : '/';
++        case 0xC0: return shift ? '~' : '`';
++        case 0xDB: return shift ? '{' : '[';
++        case 0xDC: return shift ? '|' : '\\';
++        case 0xDD: return shift ? '}' : ']';
++        case 0xDE: return shift ? '"' : '\'';
++    }
++    return 0;
++}
++}  // namespace
++STDCALL(user32, MapVirtualKeyA, 2) {  // (code, type): 0 VK->scan, 1 scan->VK, 2 VK->char, 3 scan->VK (left/right)
++    const uint32_t code = a[0];
++    switch (a[1]) {
++        case 1: return vk_of_scan(code, false);
++        case 3: return vk_of_scan(code, true);
++        case 2: return char_of_vk(code, true);
++        default: return 0;
++    }
++}
++STDCALL(user32, ToUnicode, 6) {  // (vk, scan, keystate[256], buffer, size, flags)
++    const bool shift = a[2] && (rd8(a[2] + 0x10) & 0x80);
++    const uint16_t ch = char_of_vk(a[0], shift);
++    if (!ch || !a[3] || !a[4]) return 0;
++    wr16(a[3], ch);
++    if (a[4] > 1) wr16(a[3] + 2, 0);
++    return 1;
++}
+ STDCALL(user32, CharLowerA, 1) {
+     if (a[0] < 0x10000) return uint32_t(std::tolower(int(a[0])));
+     for (uint32_t p = a[0]; rd8(p); ++p) wr8(p, uint8_t(std::tolower(rd8(p))));
+diff -ruN a/shims/vfs.cpp b/shims/vfs.cpp
+--- a/shims/vfs.cpp
++++ b/shims/vfs.cpp
+@@ -18,7 +18,7 @@
+ std::mutex g_mu;
+ std::string g_data;
+ std::string g_saves;
+-constexpr const char* kSaveRelative = "/C/Users/Player/Documents/My Games/DiRT3/savegame";
++constexpr const char* kSaveRelative = "/C/Users/Player/Documents/Codemasters/GRID/savegame";
+ std::string g_cwd = kInstallDir;
+ std::unordered_map<std::string, std::vector<std::string>> g_dirs;  // host dir -> entries
+ std::unordered_map<std::string, std::string> g_overrides;          // lower-case "dir/file" -> host file
+diff -ruN a/shims/xlive/xlive.cpp b/shims/xlive/xlive.cpp
+--- a/shims/xlive/xlive.cpp
++++ b/shims/xlive/xlive.cpp
+@@ -223,6 +223,7 @@
+ // ">>> NOT IMPLEMENTED: <name>" and return failure): its name entry called one of them, so the
+ // profile name could not be changed. The lifter hooks them (cfg3/hooks.txt):
+ //   00401070 XShowKeyboardUI (8 args, ret 0x20)     00401080 XHasOverlappedIoCompleted (1 arg)
++#ifdef DIRT3_STEAM_BUILD_HOOKS  // DiRT 3 only: addresses are ordinary code in GRID
+ extern "C" void f_00401070(X86* c) {
+     uint32_t a[8];
+     for (int i = 0; i < 8; ++i) a[i] = rd32(c->esp + 4 + 4 * i);
+@@ -235,6 +236,7 @@
+     c->eax = (c->eax & ~0xFFu) | (!ov || rd32(ov) != ERROR_IO_PENDING ? 1u : 0u);
+     c->esp += 4 + 4;
+ }
++#endif
+ STDCALL_ORD(xlive, 5250, 1) { return 0; }  // XShowAchievementsUI
+ STDCALL_ORD(xlive, 5252, 3) { return 0; }  // XShowGamerCardUI
+ STDCALL_ORD(xlive, 5260, 2) { return 0; }  // XShowSigninUI
+diff -ruN a/tools/recomp/analysis/discovery.cpp b/tools/recomp/analysis/discovery.cpp
+--- a/tools/recomp/analysis/discovery.cpp
++++ b/tools/recomp/analysis/discovery.cpp
+@@ -1,3 +1,4 @@
++#include <set>
+ #include "analysis/discovery.h"
+ 
+ #include <algorithm>
+@@ -51,6 +52,13 @@
+     const uint32_t disp = uint32_t(o.mem.disp.value);
+     auto entry = [&](int64_t k) -> bool {
+         const uint32_t slot = uint32_t(disp + k * 4);
++        // Without a .reloc every slot counts as relocated, so a table can run on into the
++        // next function whose first bytes happen to look like a code pointer (e.g. 81 EC 8C 00
++        // = 0x008CEC81). A slot the user declared an entry point ends the table. (Not "any known
++        // start": bogus seeds inside real tables would then cut those short.)
++        if (img_.pseudo_relocs() && k != 0 &&
++            std::find(cfg_.extra_entries.begin(), cfg_.extra_entries.end(), slot) != cfg_.extra_entries.end())
++            return false;
+         return img_.in_image(slot, 4) && img_.has_reloc(slot) && img_.is_code(img_.read32(slot));
+     };
+     // Hand-written CRT code indexes some tables with a displaced base (index
+@@ -111,6 +119,18 @@
+             }
+             n.len = in.ins.length;
+             ++f.insn_count;
++            if (img_.pseudo_relocs()) {
++                auto note = [&](uint8_t off, uint8_t bits) {
++                    if (bits != 32 || !off) return;
++                    const uint32_t fa = in.addr + off;
++                    if (!img_.in_image(fa, 4)) return;
++                    const uint32_t v = img_.read32(fa);
++                    if (img_.in_image(v) && code_field_set_.insert(fa).second) code_fields_.push_back(fa);
++                };
++                for (int k = 0; k < 2; ++k)
++                    if (in.ins.raw.imm[k].size) note(in.ins.raw.imm[k].offset, in.ins.raw.imm[k].size);
++                if (in.ins.raw.disp.size) note(in.ins.raw.disp.offset, in.ins.raw.disp.size);
++            }
+             const uint32_t next = in.next();
+             switch (classify(in)) {
+                 case Flow::Normal: break;
+@@ -196,7 +216,7 @@
+                             if (!jt.displaced && bound && bound < jt.targets.size()) jt.targets.resize(bound);
+                             for (uint32_t k = 0; k < jt.targets.size(); ++k) {
+                                 const uint32_t slot = jt.table + k * 4;
+-                                if (img_.is_code(slot))
++                                                                if (img_.is_code(slot))
+                                     for (int b = 0; b < 4; ++b) cover_[slot + b - text_lo_] = kTable;
+                             }
+                             n.kind = BlockEnd::JumpTable;
+@@ -396,12 +416,29 @@
+             reloc_done[i] = true;
+             const uint32_t v = img_.read32(r);
+             if (!img_.is_code(v) || cover_[v - text_lo_] == kTable) continue;
++            if (img_.pseudo_relocs() && !known_starts_.count(v) &&
++                (img_.in_image(v, 2) && ((img_.read8(v) == 0 && img_.read8(v + 1) == 0) || img_.read8(v) == 0xCC))) continue;  // zero data / int3 padding
++            if (img_.pseudo_relocs() && !known_starts_.count(v) && build(v).has_invalid) continue;
+             if (known_starts_.insert(v).second) {
+                 queue.push_back(v);
+                 ++seeds_relocs_;
+             }
+         }
+     };
++    size_t code_field_i = 0;
++    auto code_field_pass = [&]() {
++        for (; code_field_i < code_fields_.size(); ++code_field_i) {
++            const uint32_t v = img_.read32(code_fields_[code_field_i]);
++            if (!img_.is_code(v) || cover_[v - text_lo_] == kTable) continue;
++            if (img_.pseudo_relocs() && !known_starts_.count(v) &&
++                (img_.in_image(v, 2) && ((img_.read8(v) == 0 && img_.read8(v + 1) == 0) || img_.read8(v) == 0xCC))) continue;  // zero data / int3 padding
++            if (img_.pseudo_relocs() && !known_starts_.count(v) && build(v).has_invalid) continue;
++            if (known_starts_.insert(v).second) {
++                queue.push_back(v);
++                ++seeds_relocs_;
++            }
++        }
++    };
+     auto rebuild_all = [&]() {
+         compute_noreturn();
+         for (auto& [a, f] : funcs_) f = build(a);
+@@ -418,6 +455,7 @@
+         drain();
+         mark_coverage();
+         reloc_pass();
++        if (!std::getenv("RECOMP_NO_CODEFIELDS")) code_field_pass();
+         drain();
+         rebuild_all();
+         if (known_starts_.size() != before) continue;
+@@ -428,9 +466,14 @@
+         if (!g) break;
+     }
+     // Table data that was decoded as code before its table was found.
++    // A direct call target is a real function even when a table that ran on past its end
++    // (no .reloc to bound it) claims its first bytes, so those are kept.
++    std::set<uint32_t> called;
++    for (const auto& [a, f] : funcs_) called.insert(f.callees.begin(), f.callees.end());
+     for (auto it = funcs_.begin(); it != funcs_.end();) {
+         const uint32_t a = it->first;
+-        if (a >= text_lo_ && a < text_hi_ && cover_[a - text_lo_] == kTable) {
++        if (a >= text_lo_ && a < text_hi_ && cover_[a - text_lo_] == kTable && !called.count(a)) {
++            if (std::getenv("RECOMP_DEBUG_TABLE_ERASE")) std::fprintf(stderr, "table-erase %08X\n", a);
+             known_starts_.erase(a);
+             it = funcs_.erase(it);
+         } else {
+diff -ruN a/tools/recomp/analysis/discovery.h b/tools/recomp/analysis/discovery.h
+--- a/tools/recomp/analysis/discovery.h
++++ b/tools/recomp/analysis/discovery.h
+@@ -99,6 +99,10 @@
+     std::vector<uint8_t> cover_;
+     uint32_t text_lo_ = 0, text_hi_ = 0;
+     bool gap_phase_ = false;
++    // Pseudo-relocations: imm32/disp32 fields of decoded instructions that hold image pointers
++    // (only used when the image has no .reloc).
++    std::vector<uint32_t> code_fields_;
++    std::set<uint32_t> code_field_set_;
+     uint32_t seeds_calls_ = 0, seeds_relocs_ = 0, seeds_gaps_ = 0;
+ };
+ 
+diff -ruN a/tools/recomp/codegen/fn_lifter.cpp b/tools/recomp/codegen/fn_lifter.cpp
+--- a/tools/recomp/codegen/fn_lifter.cpp
++++ b/tools/recomp/codegen/fn_lifter.cpp
+@@ -387,8 +387,15 @@
+         for (size_t bi = blocks_.size(); bi-- > 0;) {
+             LBlock& lb = blocks_[bi];
+             uint32_t out = flags_live_out && lb.b->kind == BlockEnd::Ret ? F_ARITH : 0;
++            const BlockEnd k = lb.b->kind;
++            const bool direct_exit =
++                k == BlockEnd::Fallthrough || k == BlockEnd::TailCall || k == BlockEnd::Jump || k == BlockEnd::CondJump;
+             for (uint32_t s : lb.b->succ)
+                 if (auto it = block_index_.find(s); it != block_index_.end()) out |= blocks_[it->second].live_in;
++                // A direct transfer into another function: when discovery splits a
++                // function (e.g. at a jcc), the callee reads its flags from c->eflags,
++                // so they must be materialised and packed before leaving (emit_exit_to).
++                else if (direct_exit) out |= F_ARITH;
+             uint32_t live = out;
+             for (size_t i = lb.insns.size(); i-- > 0;) {
+                 lb.insns[i].live_out = live;
+@@ -406,8 +413,13 @@
+ // ---- emission ----
+ 
+ void FnLifter::emit_exit_to(uint32_t t) {
+-    if (block_index_.count(t)) line("goto L_{:08X};", t);
+-    else if (lifted_.count(t)) line("{}(c); return;", fn_name(t));
++    if (block_index_.count(t)) {
++        line("goto L_{:08X};", t);
++        return;
++    }
++    if (cur_block_ && (cur_block_->live_out & F_ARITH))
++        line("c->eflags = recomp_pack_flags(cf, pf, af, zf, sf, of, c->df);");
++    if (lifted_.count(t)) line("{}(c); return;", fn_name(t));
+     else line("recomp_call(c, {}); return;", hex(t));
+ }
+ 
+diff -ruN a/tools/recomp/pe/pe_image.cpp b/tools/recomp/pe/pe_image.cpp
+--- a/tools/recomp/pe/pe_image.cpp
++++ b/tools/recomp/pe/pe_image.cpp
+@@ -149,6 +149,21 @@
+         img.reloc_set_.insert(img.relocs_.begin(), img.relocs_.end());
+     }
+ 
++    // No base relocations: synthesize them from aligned pointers in data sections.
++    if (img.relocs_.empty()) {
++        img.pseudo_ = true;
++        const uint32_t lo = img.image_base_, hi = img.image_base_ + img.image_size_;
++        for (const Section& sec : img.sections_) {
++            if (sec.executable()) continue;
++            const uint32_t n = std::min(sec.vsize, sec.raw_size ? sec.raw_size : sec.vsize);
++            for (uint32_t o = 0; o + 4 <= n; o += 4) {
++                const uint32_t a = sec.va + o, v = img.read32(a);
++                if (v >= lo && v < hi) img.relocs_.push_back(a);
++            }
++        }
++        std::sort(img.relocs_.begin(), img.relocs_.end());
++    }
++
+     // TLS (directory 9). Fields are absolute VAs in PE32.
+     if (dirs.size() > 9 && dirs[9].rva) {
+         TlsInfo t;
+diff -ruN a/tools/recomp/pe/pe_image.h b/tools/recomp/pe/pe_image.h
+--- a/tools/recomp/pe/pe_image.h
++++ b/tools/recomp/pe/pe_image.h
+@@ -52,7 +52,11 @@
+ 
+     // Absolute addresses of every 32-bit HIGHLOW fixup.
+     const std::vector<uint32_t>& relocations() const { return relocs_; }
+-    bool has_reloc(uint32_t addr) const { return reloc_set_.count(addr) != 0; }
++    // Images without a .reloc section (fixed base, e.g. Race Driver GRID) get
++    // pseudo-relocations: has_reloc() accepts any slot and relocations() lists
++    // aligned image pointers found in non-executable sections.
++    bool pseudo_relocs() const { return pseudo_; }
++    bool has_reloc(uint32_t addr) const { return pseudo_ || reloc_set_.count(addr) != 0; }
+ 
+     bool in_image(uint32_t addr, uint32_t len = 1) const {
+         return addr >= image_base_ && uint64_t(addr) + len <= uint64_t(image_base_) + image_size_;
+@@ -79,6 +83,7 @@
+     std::unordered_map<uint32_t, size_t> import_index_;
+     std::vector<uint32_t> relocs_;
+     std::unordered_set<uint32_t> reloc_set_;
++    bool pseudo_ = false;
+     std::optional<TlsInfo> tls_;
+     std::string sha256_;
+ };

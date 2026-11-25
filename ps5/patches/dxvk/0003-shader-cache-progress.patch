@@ -1,0 +1,34 @@
+--- a/src/dxvk/dxvk_shader_cache.cpp
++++ b/src/dxvk/dxvk_shader_cache.cpp
+@@ -514,6 +514,7 @@
+     env::setThreadName("dxvk-cache");
+ 
+     bool stop = false;
++    size_t written = 0u, logged = 0u;
+ 
+     while (!stop) {
+       std::unique_lock lock(m_writeMutex);
+@@ -550,10 +551,23 @@
+           }
+         }
+ 
++        written += localQueue.size();
+         localQueue.clear();
+ 
+         m_binFile.flush();
+         m_lutFile.flush();
++
++        // Each shader is converted here before it is written, one at a time:
++        // say how far behind this is, so that a recording session can wait for it.
++        if (written - logged >= 50u || (idle && written != logged)) {
++          size_t waiting = 0u;
++
++          { std::unique_lock countLock(m_writeMutex);
++            waiting = m_writeQueue.size(); }
++
++          Logger::info(str::format("DXVK: shader cache: ", written, " shaders written, ", waiting, " waiting"));
++          logged = written;
++        }
+       }
+     }
+   }

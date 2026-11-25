@@ -1,0 +1,163 @@
+diff --git a/src/d3d9/meson.build b/src/d3d9/meson.build
+--- a/src/d3d9/meson.build	2026-11-14 19:19:57
++++ b/src/d3d9/meson.build	2026-11-14 16:07:34
+@@ -60,7 +60,7 @@
+   d3d9_link_depends += files('d3d9.sym')
+ endif
+ 
+-if platform == 'darwin' or platform == 'horizon'
++if platform == 'darwin' or platform == 'horizon' or platform == 'freebsd'
+   # Apple: a static library, linked into the app together with DXVK's internal
+   # static libraries (no loose dylibs; iOS apps cannot load arbitrary ones).
+   d3d9_dll = static_library(dxvk_name_prefix+'d3d9', d3d9_src, glsl_generator.process(d3d9_shaders), d3d9_res,
+diff --git a/src/util/log/log.cpp b/src/util/log/log.cpp
+--- a/src/util/log/log.cpp	2026-11-14 19:19:57
++++ b/src/util/log/log.cpp	2026-11-14 16:07:34
+@@ -5,7 +5,7 @@
+ #include "../util_env.h"
+ 
+ namespace dxvk {
+-  Logger Logger::s_instance("dxvk-switch.log");
++  Logger Logger::s_instance("dxvk.log");
+   
+   Logger::Logger(const std::string& fileName)
+   : m_minLevel(getMinLogLevel()), m_fileName(fileName) {
+diff --git a/src/util/thread.h b/src/util/thread.h
+--- a/src/util/thread.h	2026-11-14 19:19:57
++++ b/src/util/thread.h	2026-11-14 16:07:34
+@@ -361,14 +361,14 @@
+     using std::thread::thread;
+ 
+     void set_priority(ThreadPriority priority) {
+-#if defined(__APPLE__) || defined(__SWITCH__)
++#if defined(__APPLE__) || (defined(__SWITCH__) || defined(__PROSPERO__))
+       // Darwin's SCHED_OTHER priorities are 15..47 (default 31), so the
+       // priority 0 below starves the thread: a draw waiting for a pipeline
+       // on a compiler worker could stall for seconds. Keep the default.
+       (void)priority;
+       return;
+ #endif
+-#ifndef __SWITCH__
++#if !defined(__SWITCH__) && !defined(__PROSPERO__)
+       ::sched_param param = {};
+       int32_t policy;
+       switch (priority) {
+diff --git a/src/util/util_env.cpp b/src/util/util_env.cpp
+--- a/src/util/util_env.cpp	2026-11-14 19:19:57
++++ b/src/util/util_env.cpp	2026-11-14 16:07:34
+@@ -100,7 +100,7 @@
+     exePath.resize(len + 1);
+ 
+     return str::fromws(exePath.data());
+-#elif defined(__SWITCH__)
++#elif (defined(__SWITCH__) || defined(__PROSPERO__))
+     return "dirt3_game.exe";
+ #elif defined(__linux__)
+     std::array<char, PATH_MAX> exePath = {};
+@@ -151,7 +151,7 @@
+ #ifdef __APPLE__
+     ::pthread_setname_np(posixName.data());
+ #else
+-#ifndef __SWITCH__
++#if !defined(__SWITCH__) && !defined(__PROSPERO__)
+     ::pthread_setname_np(pthread_self(), posixName.data());
+ #endif
+ #endif
+diff --git a/src/util/util_version.h b/src/util/util_version.h
+--- a/src/util/util_version.h	2026-11-14 19:19:57
++++ b/src/util/util_version.h	2026-11-14 16:07:34
+@@ -6,6 +6,10 @@
+ 
+ #include "util_string.h"
+ 
++// FreeBSD's <sys/types.h> (the PS5 SDK) defines major() and minor() as macros.
++#undef major
++#undef minor
++
+ namespace dxvk {
+ 
+   /**
+diff --git a/src/util/util_win32_compat.h b/src/util/util_win32_compat.h
+--- a/src/util/util_win32_compat.h	2026-11-14 19:19:57
++++ b/src/util/util_win32_compat.h	2026-11-14 19:19:57
+@@ -1,6 +1,6 @@
+ #pragma once
+ 
+-#if defined(__unix__) || defined(__APPLE__) || defined(__SWITCH__)
++#if defined(__unix__) || defined(__APPLE__) || (defined(__SWITCH__) || defined(__PROSPERO__))
+ 
+ #include <windows.h>
+ #include <SDL3/SDL.h>
+@@ -9,6 +9,15 @@
+ 
+ #include "log/log.h"
+ 
++#if defined(__PROSPERO__)
++// PS5: SDL has no Vulkan support there (no window system). The title supplies the
++// three Vulkan entry points of the SDL3 window layer itself: RADV is linked in and
++// the surface is the display's plane (Dirt3 platform/ps5/ps5_vulkan.cpp).
++extern "C" bool dirt3_ps5_vk_load_library(const char*);
++extern "C" char const* const* dirt3_ps5_vk_instance_extensions(Uint32*);
++extern "C" bool dirt3_ps5_vk_create_surface(void*, VkInstance, const VkAllocationCallbacks*, VkSurfaceKHR*);
++#endif
++
+ inline HMODULE LoadLibraryA(LPCSTR lpLibFileName) {
+   return reinterpret_cast<HMODULE>(uintptr_t(1));
+ }
+@@ -21,6 +30,11 @@
+   if (!module)
+     return nullptr;
+ 
++#if defined(__PROSPERO__)
++  if (!std::strcmp(lpProcName, "SDL_Vulkan_LoadLibrary")) return reinterpret_cast<void*>(&::dirt3_ps5_vk_load_library);
++  if (!std::strcmp(lpProcName, "SDL_Vulkan_GetInstanceExtensions")) return reinterpret_cast<void*>(&::dirt3_ps5_vk_instance_extensions);
++  if (!std::strcmp(lpProcName, "SDL_Vulkan_CreateSurface")) return reinterpret_cast<void*>(&::dirt3_ps5_vk_create_surface);
++#endif
+   #define SDL_PROC(ret, name, params) if (!std::strcmp(lpProcName, #name)) return reinterpret_cast<void*>(&::name);
+   #include "../wsi/sdl3/wsi_platform_sdl3_funcs.h"
+   if (!std::strcmp(lpProcName, "SDL_RunOnMainThread")) return reinterpret_cast<void*>(&::SDL_RunOnMainThread);
+diff --git a/src/wsi/sdl3/wsi_platform_sdl3.cpp b/src/wsi/sdl3/wsi_platform_sdl3.cpp
+--- a/src/wsi/sdl3/wsi_platform_sdl3.cpp	2026-11-14 19:19:57
++++ b/src/wsi/sdl3/wsi_platform_sdl3.cpp	2026-11-14 16:07:34
+@@ -9,7 +9,7 @@
+ 
+ namespace dxvk::wsi {
+ 
+-#if defined(__APPLE__) || defined(__SWITCH__)
++#if defined(__APPLE__) || (defined(__SWITCH__) || defined(__PROSPERO__))
+   // Cocoa/UIKit only allow window changes (and Metal view creation) on the
+   // main thread, while DXVK runs on the application's render thread. These
+   // wrappers marshal those calls with SDL_RunOnMainThread.
+@@ -64,7 +64,7 @@
+         "libSDL3.so.0"
+ #endif
+       );
+-#if defined(__APPLE__) || defined(__SWITCH__)
++#if defined(__APPLE__) || (defined(__SWITCH__) || defined(__PROSPERO__))
+     // SDL linked into the process (always the case on iOS).
+     if (libsdl == nullptr) {
+       HMODULE self = LoadLibraryA(nullptr);
+@@ -84,7 +84,7 @@
+       }
+     #include "wsi_platform_sdl3_funcs.h"
+ 
+-#if defined(__APPLE__) || defined(__SWITCH__)
++#if defined(__APPLE__) || (defined(__SWITCH__) || defined(__PROSPERO__))
+     g_runOnMain = reinterpret_cast<RunOnMainFn>(GetProcAddress(libsdl, "SDL_RunOnMainThread"));
+     g_isMain = reinterpret_cast<IsMainFn>(GetProcAddress(libsdl, "SDL_IsMainThread"));
+     rawSetWindowSize = SDL_SetWindowSize;               SDL_SetWindowSize = &mainSetWindowSize;
+diff --git a/subprojects/libdisplay-info/edid.c b/subprojects/libdisplay-info/edid.c
+--- a/subprojects/libdisplay-info/edid.c	2026-11-14 19:19:57
++++ b/subprojects/libdisplay-info/edid.c	2026-11-14 16:07:34
+@@ -9,6 +9,11 @@
+ #include "edid.h"
+ #include "log.h"
+ 
++/* The PS5 SDK's <assert.h> only defines static_assert for C11 and later. */
++#ifndef static_assert
++#define static_assert _Static_assert
++#endif
++
+ /**
+  * The size of an EDID block, defined in section 2.2.
+  */

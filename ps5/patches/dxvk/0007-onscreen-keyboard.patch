@@ -1,0 +1,137 @@
+diff -ur a/src/dxvk/dxvk_swapchain_blitter.cpp b/src/dxvk/dxvk_swapchain_blitter.cpp
+--- a/src/dxvk/dxvk_swapchain_blitter.cpp
++++ b/src/dxvk/dxvk_swapchain_blitter.cpp
+@@ -10,6 +10,7 @@
+ 
+ // The title's graphics menu row (platform/ps5/ps5_platform.cpp): the statistics are shown or not.
+ extern "C" bool dirt3_ps5_hud_enabled();
++extern "C" bool dirt3_ps5_keyboard_active();
+ 
+ namespace dxvk {
+   
+@@ -44,7 +45,7 @@
+     std::unique_lock lock(m_mutex);
+ 
+     // Update HUD, if we have one
+-    const bool hudOn = m_hud != nullptr && dirt3_ps5_hud_enabled();
++    const bool hudOn = m_hud != nullptr && (dirt3_ps5_hud_enabled() || dirt3_ps5_keyboard_active());
+ 
+     if (hudOn)
+       m_hud->update();
+diff -ur a/src/dxvk/hud/dxvk_hud.cpp b/src/dxvk/hud/dxvk_hud.cpp
+--- a/src/dxvk/hud/dxvk_hud.cpp
++++ b/src/dxvk/hud/dxvk_hud.cpp
+@@ -27,6 +27,7 @@
+     addItem<HudCsThreadItem>("cs", -1, device);
+     addItem<HudGpuLoadItem>("gpuload", -1, device);
+     addItem<HudCompilerActivityItem>("compiler", -1, device);
++    addItem<HudKeyboardItem>("dirt3keyboard", -1);
+   }
+ 
+ 
+diff -ur a/src/dxvk/hud/dxvk_hud_item.cpp b/src/dxvk/hud/dxvk_hud_item.cpp
+--- a/src/dxvk/hud/dxvk_hud_item.cpp
++++ b/src/dxvk/hud/dxvk_hud_item.cpp
+@@ -13,6 +13,10 @@
+ #include <iomanip>
+ #include <version.h>
+ 
++// The title's keyboard and statistics switches (platform/ps5/ps5_platform.cpp)
++extern "C" int dirt3_ps5_keyboard_text(char* out, int capacity);
++extern "C" bool dirt3_ps5_hud_enabled();
++
+ namespace dxvk::hud {
+ 
+   HudItem::~HudItem() {
+@@ -83,8 +87,48 @@
+             HudRenderer&        renderer) {
+     HudPos position = { 8, 8 };
+ 
+-    for (const auto& item : m_items)
++    const bool statistics = dirt3_ps5_hud_enabled();
++
++    for (const auto& item : m_items) {
++      if (!statistics && !item->isKeyboard())
++        continue;
++
+       position = item->render(ctx, key, options, renderer, position);
++    }
++  }
++
++
++  HudPos HudKeyboardItem::render(
++    const Rc<DxvkCommandList>&ctx,
++    const HudPipelineKey&     key,
++    const HudOptions&         options,
++          HudRenderer&        renderer,
++          HudPos              position) {
++    char buffer[1024];
++    int length = dirt3_ps5_keyboard_text(buffer, sizeof(buffer));
++
++    if (length <= 0)
++      return position;
++
++    // One line per row, at a fixed place: the first line is the title
++    std::string text(buffer, size_t(length));
++    HudPos at = { 640, 360 };
++    size_t start = 0;
++    bool first = true;
++
++    while (start <= text.size()) {
++      size_t end = text.find('\n', start);
++
++      if (end == std::string::npos)
++        end = text.size();
++
++      renderer.drawText(first ? 32 : 28, at, first ? 0xffffe060u : 0xffffffffu, text.substr(start, end - start));
++      at.y += first ? 44 : 38;
++      first = false;
++      start = end + 1;
++    }
++
++    return position;
+   }
+ 
+ 
+diff -ur a/src/dxvk/hud/dxvk_hud_item.h b/src/dxvk/hud/dxvk_hud_item.h
+--- a/src/dxvk/hud/dxvk_hud_item.h
++++ b/src/dxvk/hud/dxvk_hud_item.h
+@@ -26,6 +26,12 @@
+     virtual ~HudItem();
+ 
+     /**
++     * \brief Whether this is the title's on-screen keyboard
++     * Shown even when the statistics are switched off.
++     */
++    virtual bool isKeyboard() const { return false; }
++
++    /**
+      * \brief Updates the HUD item
+      * \param [in] time Current time
+      */
+@@ -185,6 +191,25 @@
+ 
+   };
+ 
++
++  /**
++   * \brief The title's on-screen keyboard (platform/ps5/ps5_console.cpp)
++   */
++  class HudKeyboardItem : public HudItem {
++
++  public:
++
++    bool isKeyboard() const { return true; }
++
++    HudPos render(
++      const Rc<DxvkCommandList>&ctx,
++      const HudPipelineKey&     key,
++      const HudOptions&         options,
++            HudRenderer&        renderer,
++            HudPos              position);
++
++  };
++
+ 
+   /**
+    * \brief HUD item to display device info
